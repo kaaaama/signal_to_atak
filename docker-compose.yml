@@ -1,0 +1,63 @@
+services:
+  main:
+#   latest image is broken right now, should be replaced with :latest later
+    image: bbernhard/signal-cli-rest-api:1772989209-ci
+    container_name: main
+    restart: unless-stopped
+    env_file: ".env"
+    ports:
+      - "8080:8080"
+    environment:
+      MODE: ${SIGNAL_API_MODE}
+      LOG_LEVEL: ${SIGNAL_API_LOG_LEVEL}
+      JSON_RPC_IGNORE_ATTACHMENTS: "true"
+      JSON_RPC_IGNORE_STORIES: "true"
+      JSON_RPC_IGNORE_AVATARS: "true"
+      JSON_RPC_IGNORE_STICKERS: "true"
+    volumes:
+      - signal_cli_data:/home/.local/share/signal-cli
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    restart: unless-stopped
+    env_file: ".env"
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  bot:
+    build: .
+    container_name: bot
+    restart: unless-stopped
+    env_file: ".env"
+    user: "${LOCAL_UID}:${LOCAL_GID}"
+    environment:
+      PHONE_NUMBER: ${PHONE_NUMBER}
+      SIGNAL_SERVICE: ${SIGNAL_SERVICE}
+      DATABASE_URL: ${DATABASE_URL}
+      DB_POOL_SIZE: ${DB_POOL_SIZE}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW}
+      LOG_LEVEL: ${LOG_LEVEL}
+    volumes:
+      - .:/app
+    working_dir: /app
+    tty: true
+    stdin_open: true
+    depends_on:
+      - main
+      - postgres
+
+volumes:
+  signal_cli_data:
+  postgres_data:
