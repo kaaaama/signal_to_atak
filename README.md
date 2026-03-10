@@ -187,7 +187,7 @@ curl -X POST -H "Content-Type: application/json" \
   -d '{"pin":"YOUR_SIGNAL_PIN"}' \
   'http://127.0.0.1:8080/v1/register/+YOUR_TEMP_NUMBER/verify/123-456'
 ```
-
+ 
 Confirm that the API container is healthy:
 ```bash
 curl http://127.0.0.1:8080/v1/about
