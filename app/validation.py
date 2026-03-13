@@ -1,12 +1,6 @@
-from __future__ import annotations
-
-import re
 from decimal import Decimal
 
 from pydantic import BaseModel, ValidationError, field_validator
-
-
-TARGET_RE = re.compile(r"^[A-Za-z]+$")
 
 
 class ParsedPayload(BaseModel):
@@ -35,40 +29,43 @@ class ParsedPayload(BaseModel):
     @field_validator("target")
     @classmethod
     def validate_target(cls, value: str) -> str:
-        value = value.strip()
+        value = " ".join(value.strip().split())
         if not value:
             raise ValueError("Target description is missing.")
-        if not TARGET_RE.fullmatch(value):
-            raise ValueError(
-                "Target description must contain only letters (A-Z or a-z)."
-            )
+        if len(value) > 120:
+            raise ValueError("Target description is too long.")
         return value
 
 
 def parse_message(text: str) -> ParsedPayload:
     """
     Expected format:
-        <longitude> <latitude> <word>
+        <longitude> <latitude> <target phrase>
 
-    Example:
-        35.000000 48.450000 alpha
+    Examples:
+        48.563123 39.8917 tank
+        48.563123 39.8917 heavy tank
+        48.563123 39.8917 civilian vehicle
+        48.563123 39.8917 fixed wing drone
     """
     if text is None or not text.strip():
         raise ValueError("Message is empty.")
 
     parts = text.strip().split()
-    if len(parts) != 3:
+    if len(parts) < 3:
         raise ValueError(
-            "Expected exactly 3 whitespace-separated values: "
-            "<longitude> <latitude> <word>."
+            "Expected at least 3 whitespace-separated values: "
+            "<longitude> <latitude> <target phrase>."
         )
 
-    lat_raw, lon_raw, target = parts
+    lat_raw = parts[0]
+    lon_raw = parts[1]
+    target = " ".join(parts[2:])
 
     return ParsedPayload.model_validate(
         {
-            "lat": lat_raw,
             "lon": lon_raw,
+            "lat": lat_raw,
             "target": target,
         }
     )
@@ -87,10 +84,9 @@ def format_validation_error(exc: Exception) -> str:
     return (
         "Validation failed.\n"
         "Please send data in this format:\n"
-        "<longitude> <latitude> <word>\n\n"
+        "<longitude> <latitude> <target phrase>\n\n"
         f"Errors:\n{error_block}"
     )
-
 
 def format_success_reply(
     payload: ParsedPayload,

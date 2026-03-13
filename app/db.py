@@ -1,12 +1,12 @@
-from __future__ import annotations
 
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.models import MessageKey, ProcessedMessage
+from app.validation import ParsedPayload
 
 
 def utc_now() -> datetime:
@@ -171,12 +171,12 @@ class PostgresStore:
                 return claimed
 
     async def store_parsed_payload(
-            self,
-            *,
-            key: MessageKey,
-            uid: str,
-            payload: ParsedPayload,
-            active_until: datetime,
+        self,
+        *,
+        key: MessageKey,
+        uid: str,
+        payload: ParsedPayload,
+        active_until: datetime,
     ) -> None:
         stmt = (
             update(ProcessedMessage)
@@ -197,12 +197,42 @@ class PostgresStore:
             await session.execute(stmt)
             await session.commit()
 
+    async def mark_delivered_and_schedule_replay(
+        self,
+        *,
+        key: MessageKey,
+        response_text: str,
+        when: datetime,
+        replay_interval_sec: float,
+    ) -> None:
+        stmt = (
+            update(ProcessedMessage)
+            .where(ProcessedMessage.source == key.source)
+            .where(ProcessedMessage.message_timestamp == key.message_timestamp)
+            .where(ProcessedMessage.raw_text == key.raw_text)
+            .values(
+                status="done",
+                is_valid=True,
+                response_text=response_text,
+                error_text=None,
+                last_broadcast_at=when,
+                next_replay_at=when + timedelta(seconds=replay_interval_sec),
+                replay_count=ProcessedMessage.replay_count + 1,
+                last_replay_error=None,
+                updated_at=func.now(),
+            )
+        )
+
+        async with self.session_factory() as session:
+            await session.execute(stmt)
+            await session.commit()
+
     async def mark_replay_scheduled(
-            self,
-            *,
-            key: MessageKey,
-            when: datetime,
-            replay_interval_sec: float,
+        self,
+        *,
+        key: MessageKey,
+        when: datetime,
+        replay_interval_sec: float,
     ) -> None:
         stmt = (
             update(ProcessedMessage)
@@ -223,11 +253,11 @@ class PostgresStore:
             await session.commit()
 
     async def mark_replay_failed(
-            self,
-            *,
-            key: MessageKey,
-            error_text: str,
-            retry_after_sec: float,
+        self,
+        *,
+        key: MessageKey,
+        error_text: str,
+        retry_after_sec: float,
     ) -> None:
         stmt = (
             update(ProcessedMessage)
@@ -262,11 +292,11 @@ class PostgresStore:
             await session.commit()
 
     async def claim_replay_batch(
-            self,
-            *,
-            limit: int,
-            now: datetime,
-            claim_lease_sec: float,
+        self,
+        *,
+        limit: int,
+        now: datetime,
+        claim_lease_sec: float,
     ) -> list[MessageKey]:
         claim_until = now + timedelta(seconds=claim_lease_sec)
 
@@ -274,6 +304,7 @@ class PostgresStore:
             async with session.begin():
                 stmt = (
                     select(ProcessedMessage)
+                    .where(ProcessedMessage.status == "done")
                     .where(ProcessedMessage.is_valid.is_(True))
                     .where(ProcessedMessage.uid.is_not(None))
                     .where(ProcessedMessage.active_until.is_not(None))
@@ -301,7 +332,11 @@ class PostgresStore:
 
                 return claimed
 
-    async def get_processed_message(self, *, key: MessageKey) -> ProcessedMessage | None:
+    async def get_processed_message(
+        self,
+        *,
+        key: MessageKey,
+    ) -> ProcessedMessage | None:
         stmt = (
             select(ProcessedMessage)
             .where(ProcessedMessage.source == key.source)

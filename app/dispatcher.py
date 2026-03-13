@@ -51,16 +51,19 @@ class MessageDispatcher:
                 response_text=reply,
             )
             return reply
-        uid = build_uid(key, payload)
+
+        uid = build_uid(key)
 
         await self.pg.store_parsed_payload(
             key=key,
             uid=uid,
             payload=payload,
-            active_until=utc_now() + timedelta(seconds=self.settings.active_cot_lifetime_sec),
+            active_until=utc_now()
+            + timedelta(seconds=self.settings.active_cot_lifetime_sec),
         )
+
         delivered, last_error = await self._send_with_retries(
-            key=key,
+            uid=uid,
             payload=payload,
             attempts=self.settings.immediate_retry_attempts,
             base_delay_sec=self.settings.immediate_retry_delay_sec,
@@ -72,15 +75,11 @@ class MessageDispatcher:
                 payload,
                 delivered_to_tak=True,
             )
-            await self.pg.mark_replay_scheduled(
+            await self.pg.mark_delivered_and_schedule_replay(
                 key=key,
+                response_text=reply,
                 when=utc_now(),
                 replay_interval_sec=self.settings.cot_rebroadcast_interval_sec,
-            )
-            await self.pg.mark_done(
-                key=key,
-                is_valid=True,
-                response_text=reply,
             )
             return reply
 
@@ -137,12 +136,14 @@ class MessageDispatcher:
             )
             return
 
+        uid = build_uid(key)
+
         delivered, last_error = await self._send_with_retries(
-            key=key,
+            uid=uid,
             payload=payload,
             attempts=self.settings.immediate_retry_attempts,
             base_delay_sec=self.settings.immediate_retry_delay_sec,
-            phase="background",
+            phase="background-retry",
         )
 
         if delivered:
@@ -150,10 +151,11 @@ class MessageDispatcher:
                 payload,
                 delivered_to_tak=True,
             )
-            await self.pg.mark_done(
+            await self.pg.mark_delivered_and_schedule_replay(
                 key=key,
-                is_valid=True,
                 response_text=reply,
+                when=utc_now(),
+                replay_interval_sec=self.settings.cot_rebroadcast_interval_sec,
             )
             return
 
@@ -177,8 +179,14 @@ class MessageDispatcher:
                 batch = await self.pg.claim_replay_batch(
                     limit=self.settings.cot_rebroadcast_batch_size,
                     now=now,
-                    claim_lease_sec=max(self.settings.cot_rebroadcast_poll_interval_sec * 2, 15.0),
+                    claim_lease_sec=max(
+                        self.settings.cot_rebroadcast_poll_interval_sec * 2,
+                        15.0,
+                    ),
                 )
+
+                if batch:
+                    self.log.info("Claimed %d message(s) for CoT replay", len(batch))
 
                 for key in batch:
                     await self._replay_one(key)
@@ -193,7 +201,13 @@ class MessageDispatcher:
         if row is None:
             return
 
-        if not row.is_valid or row.lon is None or row.lat is None or row.target is None:
+        if (
+            not row.is_valid
+            or row.lon is None
+            or row.lat is None
+            or row.target is None
+            or row.uid is None
+        ):
             return
 
         payload = ParsedPayload(
@@ -203,12 +217,19 @@ class MessageDispatcher:
         )
 
         cot_xml = build_cot_xml(
-            key=key,
+            uid=row.uid,
             payload=payload,
             stale_seconds=self.settings.cot_stale_seconds,
         )
 
         try:
+            self.log.info(
+                "Replaying CoT uid=%s lat=%s lon=%s target=%s",
+                row.uid,
+                payload.lat,
+                payload.lon,
+                payload.target,
+            )
             await self.tak_client.send_event(cot_xml)
             await self.pg.mark_replay_scheduled(
                 key=key,
@@ -227,7 +248,7 @@ class MessageDispatcher:
     async def _send_with_retries(
         self,
         *,
-        key: MessageKey,
+        uid: str,
         payload: ParsedPayload,
         attempts: int,
         base_delay_sec: float,
@@ -235,30 +256,38 @@ class MessageDispatcher:
     ) -> tuple[bool, str | None]:
         last_error: str | None = None
         cot_xml = build_cot_xml(
-            key=key,
+            uid=uid,
             payload=payload,
             stale_seconds=self.settings.cot_stale_seconds,
         )
 
         for attempt in range(1, attempts + 1):
             try:
+                self.log.info(
+                    "Sending CoT uid=%s phase=%s lat=%s lon=%s target=%s",
+                    uid,
+                    phase,
+                    payload.lat,
+                    payload.lon,
+                    payload.target,
+                )
                 await self.tak_client.send_event(cot_xml)
                 self.log.info(
-                    "Delivered to TAK on %s attempt %d/%d for %s",
+                    "Delivered to TAK on %s attempt %d/%d for uid=%s",
                     phase,
                     attempt,
                     attempts,
-                    key,
+                    uid,
                 )
                 return True, None
             except Exception as exc:
                 last_error = str(exc)
                 self.log.warning(
-                    "TAK delivery failed on %s attempt %d/%d for %s: %s",
+                    "TAK delivery failed on %s attempt %d/%d for uid=%s: %s",
                     phase,
                     attempt,
                     attempts,
-                    key,
+                    uid,
                     exc,
                 )
                 if attempt < attempts:
