@@ -36,6 +36,16 @@ ALIASES: dict[str, str] = {
 
 @dataclass(frozen=True)
 class CotTypeEntry:
+    """Entry for a CoT type from the catalog.
+
+    Attributes:
+        cot: CoT type code.
+        full: Full description.
+        desc: Short description.
+        normalized_full: Normalized full description.
+        normalized_desc: Normalized short description.
+        tokens: Set of tokens for matching.
+    """
     cot: str
     full: str
     desc: str
@@ -46,117 +56,136 @@ class CotTypeEntry:
 
 @dataclass(frozen=True)
 class CotMatch:
+    """Result of matching a target to a CoT type.
+
+    Attributes:
+        entry: The matched CoT type entry.
+        canonical_query: The normalized query used.
+        score: Matching score.
+    """
     entry: CotTypeEntry
     canonical_query: str
     score: int
 
 
-def _normalize_text(text: str) -> str:
-    return " ".join(_WORD_RE.findall(text.lower()))
+class CotTypeCatalogService:
+    """Service for managing and resolving CoT type catalogs."""
 
+    def _normalize_text(self, text: str) -> str:
+        """Normalize text by lowercasing and joining words."""
+        return " ".join(_WORD_RE.findall(text.lower()))
 
-def _tokenize(text: str) -> frozenset[str]:
-    return frozenset(_WORD_RE.findall(text.lower()))
+    def _tokenize(self, text: str) -> frozenset[str]:
+        """Tokenize text into a set of words."""
+        return frozenset(_WORD_RE.findall(text.lower()))
 
+    def _catalog_path(self) -> Path:
+        """Get the path to the CoT types XML catalog."""
+        return Path(__file__).resolve().parent.parent / "assets" / "CoTtypes.xml"
 
-def _catalog_path() -> Path:
-    return Path(__file__).resolve().parent.parent / "assets" / "CoTtypes.xml"
+    @lru_cache(maxsize=1)
+    def load_catalog(self) -> tuple[CotTypeEntry, ...]:
+        """Load CoT type entries from the XML catalog."""
+        path = self._catalog_path()
+        tree = ET.parse(path)
+        root = tree.getroot()
 
+        entries: list[CotTypeEntry] = []
+        for elem in root.findall(".//cot"):
+            cot = (elem.attrib.get("cot") or "").strip()
+            full = (elem.attrib.get("full") or "").strip()
+            desc = (elem.attrib.get("desc") or "").strip()
 
-@lru_cache(maxsize=1)
-def load_catalog() -> tuple[CotTypeEntry, ...]:
-    path = _catalog_path()
-    tree = ET.parse(path)
-    root = tree.getroot()
+            if not cot:
+                continue
 
-    entries: list[CotTypeEntry] = []
-    for elem in root.findall(".//cot"):
-        cot = (elem.attrib.get("cot") or "").strip()
-        full = (elem.attrib.get("full") or "").strip()
-        desc = (elem.attrib.get("desc") or "").strip()
+            normalized_full = self._normalize_text(full)
+            normalized_desc = self._normalize_text(desc)
+            tokens = self._tokenize(f"{full} {desc}")
 
-        if not cot:
-            continue
-
-        normalized_full = _normalize_text(full)
-        normalized_desc = _normalize_text(desc)
-        tokens = _tokenize(f"{full} {desc}")
-
-        entries.append(
-            CotTypeEntry(
-                cot=cot,
-                full=full,
-                desc=desc,
-                normalized_full=normalized_full,
-                normalized_desc=normalized_desc,
-                tokens=tokens,
+            entries.append(
+                CotTypeEntry(
+                    cot=cot,
+                    full=full,
+                    desc=desc,
+                    normalized_full=normalized_full,
+                    normalized_desc=normalized_desc,
+                    tokens=tokens,
+                )
             )
-        )
 
-    if not entries:
-        raise RuntimeError(f"No CoT type entries loaded from {path}")
+        if not entries:
+            raise RuntimeError(f"No CoT type entries loaded from {path}")
 
-    return tuple(entries)
+        return tuple(entries)
 
+    def _score_entry(self, query: str, query_tokens: frozenset[str], entry: CotTypeEntry) -> int:
+        """Score how well a query matches a CoT entry."""
+        score = 0
 
-def _score_entry(query: str, query_tokens: frozenset[str], entry: CotTypeEntry) -> int:
-    score = 0
+        if query == entry.normalized_desc:
+            score += 1000
+        if query == entry.normalized_full:
+            score += 900
+        if query and query in entry.normalized_desc:
+            score += 300
+        if query and query in entry.normalized_full:
+            score += 250
 
-    if query == entry.normalized_desc:
-        score += 1000
-    if query == entry.normalized_full:
-        score += 900
-    if query and query in entry.normalized_desc:
-        score += 300
-    if query and query in entry.normalized_full:
-        score += 250
+        overlap = len(query_tokens & entry.tokens)
+        score += overlap * 40
 
-    overlap = len(query_tokens & entry.tokens)
-    score += overlap * 40
+        if overlap:
+            score += min(len(entry.tokens), 12)
 
-    if overlap:
-        score += min(len(entry.tokens), 12)
+        return score
 
-    return score
+    def resolve_cot_type(self, target_text: str) -> CotMatch:
+        """Resolve a target text to the best matching CoT type.
 
+        Args:
+            target_text: The target description to match.
 
-def resolve_cot_type(target_text: str) -> CotMatch:
-    original = " ".join(target_text.strip().split())
-    if not original:
-        raise ValueError("Target description is missing.")
+        Returns:
+            The best matching CotMatch, or fallback if none.
+        """
+        original = " ".join(target_text.strip().split())
+        if not original:
+            raise ValueError("Target description is missing.")
 
-    alias_query = ALIASES.get(original.lower(), original)
-    query = _normalize_text(alias_query)
-    query_tokens = _tokenize(query)
+        alias_query = ALIASES.get(original.lower(), original)
+        query = self._normalize_text(alias_query)
+        query_tokens = self._tokenize(query)
 
-    if not query_tokens:
-        raise ValueError("Target description is missing.")
+        if not query_tokens:
+            raise ValueError("Target description is missing.")
 
-    best: CotMatch | None = None
+        best: CotMatch | None = None
 
-    for entry in load_catalog():
-        score = _score_entry(query, query_tokens, entry)
-        if score <= 0:
-            continue
+        for entry in self.load_catalog():
+            score = self._score_entry(query, query_tokens, entry)
+            if score <= 0:
+                continue
 
-        match = CotMatch(
-            entry=entry,
-            canonical_query=query,
-            score=score,
-        )
+            match = CotMatch(
+                entry=entry,
+                canonical_query=query,
+                score=score,
+            )
 
-        if best is None or match.score > best.score:
-            best = match
+            if best is None or match.score > best.score:
+                best = match
 
-    if best is None:
-        fallback = CotTypeEntry(
-            cot="a-.-G-U",
-            full="Gnd/Unit",
-            desc="GROUND UNIT",
-            normalized_full="gnd unit",
-            normalized_desc="ground unit",
-            tokens=frozenset({"gnd", "unit", "ground"}),
-        )
-        return CotMatch(entry=fallback, canonical_query=query, score=0)
+        if best is None:
+            fallback = CotTypeEntry(
+                cot="a-.-G-U",
+                full="Gnd/Unit",
+                desc="GROUND UNIT",
+                normalized_full="gnd unit",
+                normalized_desc="ground unit",
+                tokens=frozenset({"gnd", "unit", "ground"}),
+            )
+            return CotMatch(entry=fallback, canonical_query=query, score=0)
 
-    return best
+        return best
+

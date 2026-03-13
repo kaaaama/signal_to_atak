@@ -2,17 +2,12 @@ import asyncio
 import logging
 from datetime import timedelta
 
-from app.cot import build_cot_xml, build_uid
+from app.cot import CotService
 from app.db import PostgresStore, utc_now
 from app.models import MessageKey
 from app.settings import Settings
 from app.tak_client import TakTlsClient
-from app.validation import (
-    ParsedPayload,
-    format_success_reply,
-    format_validation_error,
-    parse_message,
-)
+from app.validation import ParsedPayload, ValidationService
 
 
 class MessageDispatcher:
@@ -22,10 +17,14 @@ class MessageDispatcher:
         pg: PostgresStore,
         tak_client: TakTlsClient,
         settings: Settings,
+        validation_service: ValidationService,
+        cot_service: CotService,
     ) -> None:
         self.pg = pg
         self.tak_client = tak_client
         self.settings = settings
+        self.validation_service = validation_service
+        self.cot_service = cot_service
         self.log = logging.getLogger("atak.dispatcher")
 
     async def process_new_message(
@@ -42,9 +41,9 @@ class MessageDispatcher:
         )
 
         try:
-            payload = parse_message(raw_text)
+            payload = self.validation_service.parse_message(raw_text)
         except Exception as exc:
-            reply = format_validation_error(exc)
+            reply = self.validation_service.format_validation_error(exc)
             await self.pg.mark_done(
                 key=key,
                 is_valid=False,
@@ -52,7 +51,7 @@ class MessageDispatcher:
             )
             return reply
 
-        uid = build_uid(key)
+        uid = self.cot_service.build_uid(key)
 
         await self.pg.store_parsed_payload(
             key=key,
@@ -71,7 +70,7 @@ class MessageDispatcher:
         )
 
         if delivered:
-            reply = format_success_reply(
+            reply = self.validation_service.format_success_reply(
                 payload,
                 delivered_to_tak=True,
             )
@@ -83,7 +82,7 @@ class MessageDispatcher:
             )
             return reply
 
-        reply = format_success_reply(
+        reply = self.validation_service.format_success_reply(
             payload,
             delivered_to_tak=False,
             retry_scheduled=True,
@@ -126,9 +125,9 @@ class MessageDispatcher:
 
     async def _retry_one(self, key: MessageKey) -> None:
         try:
-            payload = parse_message(key.raw_text)
+            payload = self.validation_service.parse_message(key.raw_text)
         except Exception as exc:
-            reply = format_validation_error(exc)
+            reply = self.validation_service.format_validation_error(exc)
             await self.pg.mark_done(
                 key=key,
                 is_valid=False,
@@ -136,7 +135,7 @@ class MessageDispatcher:
             )
             return
 
-        uid = build_uid(key)
+        uid = self.cot_service.build_uid(key)
 
         delivered, last_error = await self._send_with_retries(
             uid=uid,
@@ -147,7 +146,7 @@ class MessageDispatcher:
         )
 
         if delivered:
-            reply = format_success_reply(
+            reply = self.validation_service.format_success_reply(
                 payload,
                 delivered_to_tak=True,
             )
@@ -162,7 +161,7 @@ class MessageDispatcher:
         await self.pg.mark_failed(
             key=key,
             is_valid=True,
-            response_text=format_success_reply(
+            response_text=self.validation_service.format_success_reply(
                 payload,
                 delivered_to_tak=False,
                 retry_scheduled=True,
@@ -216,7 +215,7 @@ class MessageDispatcher:
             target=row.target,
         )
 
-        cot_xml = build_cot_xml(
+        cot_xml = self.cot_service.build_cot_xml(
             uid=row.uid,
             payload=payload,
             stale_seconds=self.settings.cot_stale_seconds,
@@ -255,7 +254,7 @@ class MessageDispatcher:
         phase: str,
     ) -> tuple[bool, str | None]:
         last_error: str | None = None
-        cot_xml = build_cot_xml(
+        cot_xml = self.cot_service.build_cot_xml(
             uid=uid,
             payload=payload,
             stale_seconds=self.settings.cot_stale_seconds,
