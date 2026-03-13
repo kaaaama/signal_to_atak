@@ -27,6 +27,22 @@ class Settings(BaseSettings):
     tak_ca_file: Path = Field(validation_alias="TAK_CA_FILE")
     tak_client_cert_file: Path = Field(validation_alias="TAK_CLIENT_CERT_FILE")
     tak_client_key_file: Path = Field(validation_alias="TAK_CLIENT_KEY_FILE")
+    active_cot_lifetime_sec: int = Field(
+        default=86400,
+        validation_alias="ACTIVE_COT_LIFETIME_SEC",
+    )
+    cot_rebroadcast_interval_sec: float = Field(
+        default=20.0,
+        validation_alias="COT_REBROADCAST_INTERVAL_SEC",
+    )
+    cot_rebroadcast_poll_interval_sec: float = Field(
+        default=5.0,
+        validation_alias="COT_REBROADCAST_POLL_INTERVAL_SEC",
+    )
+    cot_rebroadcast_batch_size: int = Field(
+        default=100,
+        validation_alias="COT_REBROADCAST_BATCH_SIZE",
+    )
     tak_client_key_password: str | None = Field(
         default=None,
         validation_alias="TAK_CLIENT_KEY_PASSWORD",

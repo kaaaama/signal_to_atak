@@ -63,12 +63,12 @@ def parse_message(text: str) -> ParsedPayload:
             "<longitude> <latitude> <word>."
         )
 
-    lon_raw, lat_raw, target = parts
+    lat_raw, lon_raw, target = parts
 
     return ParsedPayload.model_validate(
         {
-            "lon": lon_raw,
             "lat": lat_raw,
+            "lon": lon_raw,
             "target": target,
         }
     )
@@ -108,7 +108,7 @@ def format_success_reply(
 
     return (
         f"{status_line}\n"
-        f"Longitude: {payload.lon}\n"
         f"Latitude: {payload.lat}\n"
+        f"Longitude: {payload.lon}\n"
         f"Target description: {payload.target}"
     )

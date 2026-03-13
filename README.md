@@ -148,23 +148,8 @@ Start the Signal API:
 ```bash
 docker compose up -d signal-cli-rest-api
 ```
-Register the number by SMS:
-```bash
-curl -X POST -H "Content-Type: application/json" \
-  'http://127.0.0.1:8080/v1/register/+YOUR_TEMP_NUMBER'
-```
-Or register by voice call:
-```bash
-curl -X POST -H "Content-Type: application/json" \
-  -d '{"use_voice": true}' \
-  'http://127.0.0.1:8080/v1/register/+YOUR_TEMP_NUMBER'
-```
-These registration endpoints are documented by signal-cli-rest-api.
-
-If registration says captcha is required, solve the captcha first.
-
+Register the number by SMS\
 Open:
-
 https://signalcaptchas.org/registration/generate.html
 
 After solving the captcha, copy the captcha token (failed request in developers console, not including signalcaptcha://) and retry registration:
@@ -190,10 +175,6 @@ curl -X POST -H "Content-Type: application/json" \
  
 Confirm that the API container is healthy:
 ```bash
-curl http://127.0.0.1:8080/v1/about
 docker compose logs -f signal-cli-rest-api
 ```
-Start the bot:
-```bash
-docker compose up -d --build 
-```
+

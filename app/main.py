@@ -18,11 +18,19 @@ class ValidateCommand(Command):
         self.dispatcher = dispatcher
         self.log = logging.getLogger("bot.validate")
         self._retry_task: asyncio.Task | None = None
+        self._replay_task: asyncio.Task | None = None
 
     async def _ensure_retry_task(self) -> None:
         if self._retry_task is None or self._retry_task.done():
             self._retry_task = asyncio.create_task(self.dispatcher.retry_forever())
             self.log.info("Started background TAK retry loop")
+
+    async def _ensure_replay_task(self) -> None:
+        if self._replay_task is None or self._replay_task.done():
+            self._replay_task = asyncio.create_task(
+                self.dispatcher.replay_active_events_forever()
+            )
+            self.log.info("Started background active CoT replay loop")
 
     async def handle(self, context: Context) -> None:
         await self._ensure_retry_task()

@@ -204,6 +204,7 @@ ensure_writable() {
 }
 
 validate_repo_layout() {
+  cp "$ROOT/infra/tak/tak/CoreConfig.example.xml" "$ROOT/infra/tak/tak/CoreConfig.xml"
   [[ -f "$ROOT/docker-compose.yml" ]] || die "Missing docker-compose.yml in $ROOT"
   [[ -f "$ROOT/.env" ]] || die "Missing .env in $ROOT"
   [[ -f "$ROOT/infra/tak/docker/Dockerfile.takserver" ]] || die "Missing $ROOT/infra/tak/docker/Dockerfile.takserver"

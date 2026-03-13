@@ -2,7 +2,7 @@ import asyncio
 import logging
 from datetime import timedelta
 
-from app.cot import build_cot_xml
+from app.cot import build_cot_xml, build_uid
 from app.db import PostgresStore, utc_now
 from app.models import MessageKey
 from app.settings import Settings
@@ -51,7 +51,14 @@ class MessageDispatcher:
                 response_text=reply,
             )
             return reply
+        uid = build_uid(key, payload)
 
+        await self.pg.store_parsed_payload(
+            key=key,
+            uid=uid,
+            payload=payload,
+            active_until=utc_now() + timedelta(seconds=self.settings.active_cot_lifetime_sec),
+        )
         delivered, last_error = await self._send_with_retries(
             key=key,
             payload=payload,
@@ -64,6 +71,11 @@ class MessageDispatcher:
             reply = format_success_reply(
                 payload,
                 delivered_to_tak=True,
+            )
+            await self.pg.mark_replay_scheduled(
+                key=key,
+                when=utc_now(),
+                replay_interval_sec=self.settings.cot_rebroadcast_interval_sec,
             )
             await self.pg.mark_done(
                 key=key,
@@ -155,6 +167,62 @@ class MessageDispatcher:
             ),
             error_text=last_error or "Unknown TAK delivery error",
         )
+
+    async def replay_active_events_forever(self) -> None:
+        while True:
+            try:
+                now = utc_now()
+                await self.pg.clear_expired_replays(now=now)
+
+                batch = await self.pg.claim_replay_batch(
+                    limit=self.settings.cot_rebroadcast_batch_size,
+                    now=now,
+                    claim_lease_sec=max(self.settings.cot_rebroadcast_poll_interval_sec * 2, 15.0),
+                )
+
+                for key in batch:
+                    await self._replay_one(key)
+
+            except Exception:
+                self.log.exception("Replay loop iteration failed")
+
+            await asyncio.sleep(self.settings.cot_rebroadcast_poll_interval_sec)
+
+    async def _replay_one(self, key: MessageKey) -> None:
+        row = await self.pg.get_processed_message(key=key)
+        if row is None:
+            return
+
+        if not row.is_valid or row.lon is None or row.lat is None or row.target is None:
+            return
+
+        payload = ParsedPayload(
+            lon=row.lon,
+            lat=row.lat,
+            target=row.target,
+        )
+
+        cot_xml = build_cot_xml(
+            key=key,
+            payload=payload,
+            stale_seconds=self.settings.cot_stale_seconds,
+        )
+
+        try:
+            await self.tak_client.send_event(cot_xml)
+            await self.pg.mark_replay_scheduled(
+                key=key,
+                when=utc_now(),
+                replay_interval_sec=self.settings.cot_rebroadcast_interval_sec,
+            )
+            self.log.info("Replayed active CoT event for %s", key)
+        except Exception as exc:
+            await self.pg.mark_replay_failed(
+                key=key,
+                error_text=str(exc),
+                retry_after_sec=self.settings.retry_loop_interval_sec,
+            )
+            self.log.warning("Replay failed for %s: %s", key, exc)
 
     async def _send_with_retries(
         self,

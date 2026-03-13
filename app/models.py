@@ -1,9 +1,8 @@
-from __future__ import annotations
-
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, Text, func
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, Integer, Numeric, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -36,6 +35,17 @@ class ProcessedMessage(Base):
     is_valid: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     response_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    uid: Mapped[str | None] = mapped_column(Text, nullable=True)
+    lon: Mapped[Decimal | None] = mapped_column(Numeric(18, 10), nullable=True)
+    lat: Mapped[Decimal | None] = mapped_column(Numeric(18, 10), nullable=True)
+    target: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    active_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_broadcast_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_replay_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    replay_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    last_replay_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
