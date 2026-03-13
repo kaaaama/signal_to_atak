@@ -2,3 +2,6 @@ signalbot==0.25.0
 asyncpg==0.31.0
 SQLAlchemy==2.0.48
 alembic==1.18.4
+lxml==6.0.2
+pydantic==2.12.5
+pydantic-settings==2.13.1

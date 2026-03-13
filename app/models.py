@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, Text, func
@@ -6,6 +9,13 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 class Base(DeclarativeBase):
     pass
+
+
+@dataclass(frozen=True)
+class MessageKey:
+    source: str
+    message_timestamp: int
+    raw_text: str
 
 
 class ProcessedMessage(Base):
@@ -36,5 +46,5 @@ class ProcessedMessage(Base):
         DateTime(timezone=True),
         nullable=False,
         server_default=func.now(),
-        server_onupdate=func.now(),
+        onupdate=func.now(),
     )

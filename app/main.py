@@ -1,19 +1,32 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 
 from signalbot import Command, Config, Context, SignalBot, enable_console_logging
 
 from app.db import PostgresStore
+from app.dispatcher import MessageDispatcher
 from app.settings import Settings
-from app.validation import format_reply, validate_message
+from app.tak_client import TakTlsClient
 
 
 class ValidateCommand(Command):
-    def __init__(self, pg: PostgresStore) -> None:
+    def __init__(self, *, pg: PostgresStore, dispatcher: MessageDispatcher) -> None:
         super().__init__()
         self.pg = pg
+        self.dispatcher = dispatcher
+        self.log = logging.getLogger("bot.validate")
+        self._retry_task: asyncio.Task | None = None
+
+    async def _ensure_retry_task(self) -> None:
+        if self._retry_task is None or self._retry_task.done():
+            self._retry_task = asyncio.create_task(self.dispatcher.retry_forever())
+            self.log.info("Started background TAK retry loop")
 
     async def handle(self, context: Context) -> None:
+        await self._ensure_retry_task()
+
         text = context.message.text
 
         if not isinstance(text, str) or not text.strip():
@@ -21,7 +34,7 @@ class ValidateCommand(Command):
 
         source = context.message.source
         message_timestamp = context.message.timestamp
-        raw_text = text
+        raw_text = text.strip()
 
         claimed = await self.pg.try_claim_message(
             source=source,
@@ -31,27 +44,20 @@ class ValidateCommand(Command):
         if not claimed:
             return
 
+        reply = await self.dispatcher.process_new_message(
+            source=source,
+            message_timestamp=message_timestamp,
+            raw_text=raw_text,
+        )
+
         try:
-            result = validate_message(text)
-            reply = format_reply(result)
-
             await context.reply(reply)
-
-            await self.pg.mark_processed(
-                source=source,
-                message_timestamp=message_timestamp,
-                raw_text=raw_text,
-                is_valid=result.is_valid,
-                response_text=reply,
+        except Exception:
+            self.log.exception(
+                "Failed to send Signal reply for %s / %s",
+                source,
+                message_timestamp,
             )
-        except Exception as exc:
-            await self.pg.mark_failed(
-                source=source,
-                message_timestamp=message_timestamp,
-                raw_text=raw_text,
-                error_text=str(exc),
-            )
-            raise
 
 
 def main() -> None:
@@ -65,7 +71,7 @@ def main() -> None:
         Config(
             signal_service=settings.signal_service,
             phone_number=settings.phone_number,
-            storage=None,
+            storage={"type": "in-memory"},
             download_attachments=False,
         )
     )
@@ -75,10 +81,16 @@ def main() -> None:
         pool_size=settings.db_pool_size,
         max_overflow=settings.db_max_overflow,
     )
+    tak_client = TakTlsClient(settings)
+    dispatcher = MessageDispatcher(
+        pg=pg,
+        tak_client=tak_client,
+        settings=settings,
+    )
 
     bot.register(
-        ValidateCommand(pg),
-        contacts=True
+        ValidateCommand(pg=pg, dispatcher=dispatcher),
+        contacts=True,
     )
 
     try:

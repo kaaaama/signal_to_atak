@@ -40,7 +40,7 @@ This project supports two Signal account setups:
 1. **Use an existing Signal account as a linked device**
 2. **Register a separate Signal account for the bot**
 
-Choose **one** approach and keep your `.env` consistent with it. `signalbot` expects `PHONE_NUMBER` to be the number of the account that `main` actually uses. In the documented `signalbot` setup flow, QR linking is done first and the server is then restarted in `json-rpc` mode for normal bot runtime. `signal-cli-rest-api` also documents that `normal` mode is the slowest and `json-rpc` mode is usually the fastest. :contentReference[oaicite:0]{index=0}
+Choose **one** approach and keep your `.env` consistent with it. `signalbot` expects `PHONE_NUMBER` to be the number of the account that `signal-cli-rest-api` actually uses. In the documented `signalbot` setup flow, QR linking is done first and the server is then restarted in `json-rpc` mode for normal bot runtime. `signal-cli-rest-api` also documents that `normal` mode is the slowest and `json-rpc` mode is usually the fastest. :contentReference[oaicite:0]{index=0}
 
 ### Common prerequisites
 
@@ -52,7 +52,7 @@ cp .env.example .env
 
 At minimum, make sure these values are present:
 ```bash
-SIGNAL_SERVICE=main:8080
+SIGNAL_SERVICE=signal-cli-rest-api:8080
 POSTGRES_DB=bot
 POSTGRES_USER=user
 POSTGRES_PASSWORD=YOUR_PASSWORD
@@ -64,7 +64,7 @@ LOCAL_GID=1000
 Start infrastructure and apply database migrations:
 
 ```bash
-docker compose up -d postgres main
+docker compose up -d postgres signal-cli-rest-api
 docker compose run --rm bot alembic upgrade head
 ```
 
@@ -80,7 +80,7 @@ Important limitation\
 If Signal is only running inside an emulator on the same PC and you cannot practically scan the QR code, this approach is usually not convenient. In that case, use Option 2 instead. This follows directly from Signal’s linked-device process, which requires the mobile app to scan the QR code.
 
 Steps\
-Set the real existing Signal number in .env and start main in normal mode for first-time linking:
+Set the real existing Signal number in .env and start signal-cli-rest-api in normal mode for first-time linking:
 ```bash
 PHONE_NUMBER=+YOUR_REAL_SIGNAL_NUMBER
 SIGNAL_API_MODE=normal
@@ -88,7 +88,7 @@ SIGNAL_API_MODE=normal
 
 Start the Signal API:
 ```bash
-docker compose up -d main
+docker compose up -d signal-cli-rest-api
 ```
 Open the QR endpoint in your browser:
 ```bash
@@ -108,12 +108,12 @@ SIGNAL_API_MODE=json-rpc
 ```
 Restart the API container:
 ```bash
-docker compose up -d --force-recreate main
+docker compose up -d --force-recreate signal-cli-rest-api
 ```
-Confirm that main is healthy and has loaded the linked number:
+Confirm that signal-cli-rest-api is healthy and has loaded the linked number:
 ```bash
 curl http://127.0.0.1:8080/v1/about
-docker compose logs -f main
+docker compose logs -f signal-cli-rest-api
 ```
 
 The signalbot docs note that the logs should show the linked number being found, and /v1/about can be used to confirm the server mode.
@@ -146,7 +146,7 @@ SIGNAL_API_MODE=json-rpc
 ```
 Start the Signal API:
 ```bash
-docker compose up -d main
+docker compose up -d signal-cli-rest-api
 ```
 Register the number by SMS:
 ```bash
@@ -191,7 +191,7 @@ curl -X POST -H "Content-Type: application/json" \
 Confirm that the API container is healthy:
 ```bash
 curl http://127.0.0.1:8080/v1/about
-docker compose logs -f main
+docker compose logs -f signal-cli-rest-api
 ```
 Start the bot:
 ```bash

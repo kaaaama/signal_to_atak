@@ -1,118 +1,114 @@
+from __future__ import annotations
+
 import re
-from dataclasses import dataclass, field
-from decimal import Decimal, InvalidOperation
-from typing import Optional
+from decimal import Decimal
+
+from pydantic import BaseModel, ValidationError, field_validator
 
 
-WORD_RE = re.compile(r"^[A-Za-z]+$")
+TARGET_RE = re.compile(r"^[A-Za-z]+$")
 
 
-@dataclass
-class ParsedPayload:
-    long: Decimal
+class ParsedPayload(BaseModel):
+    lon: Decimal
     lat: Decimal
     target: str
 
+    @field_validator("lon")
+    @classmethod
+    def validate_lon(cls, value: Decimal) -> Decimal:
+        if not value.is_finite():
+            raise ValueError("Longitude must be a finite decimal number.")
+        if not (Decimal("-180") <= value <= Decimal("180")):
+            raise ValueError("Longitude must be in range [-180, 180].")
+        return value
 
-@dataclass
-class ValidationResult:
-    is_valid: bool
-    errors: list[str] = field(default_factory=list)
-    parsed: Optional[ParsedPayload] = None
+    @field_validator("lat")
+    @classmethod
+    def validate_lat(cls, value: Decimal) -> Decimal:
+        if not value.is_finite():
+            raise ValueError("Latitude must be a finite decimal number.")
+        if not (Decimal("-90") <= value <= Decimal("90")):
+            raise ValueError("Latitude must be in range [-90, 90].")
+        return value
+
+    @field_validator("target")
+    @classmethod
+    def validate_target(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Target description is missing.")
+        if not TARGET_RE.fullmatch(value):
+            raise ValueError(
+                "Target description must contain only letters (A-Z or a-z)."
+            )
+        return value
 
 
-def _parse_decimal(value: str, field_name: str) -> tuple[Optional[Decimal], list[str]]:
-    errors: list[str] = []
-    value = value.strip()
-
-    if not value:
-        errors.append(f"{field_name}: value is missing.")
-        return None, errors
-
-    try:
-        parsed = Decimal(value)
-    except InvalidOperation:
-        errors.append(f"{field_name}: '{value}' is not a valid decimal number.")
-        return None, errors
-
-    if not parsed.is_finite():
-        errors.append(f"{field_name}: '{value}' must be a finite decimal number.")
-        return None, errors
-
-    return parsed, errors
-
-
-def validate_message(text: str) -> ValidationResult:
+def parse_message(text: str) -> ParsedPayload:
     """
     Expected format:
-        <decimal> <decimal> <word>
+        <longitude> <latitude> <word>
 
     Example:
-        2312.123 123123.12312333 word
+        35.000000 48.450000 alpha
     """
     if text is None or not text.strip():
-        return ValidationResult(
-            is_valid=False,
-            errors=["Message is empty."],
-        )
+        raise ValueError("Message is empty.")
 
-    parts = [part for part in text.strip().split(" ")]
-
+    parts = text.strip().split()
     if len(parts) != 3:
-        return ValidationResult(
-            is_valid=False,
-            errors=[
-                "Expected exactly 3 comma-separated values: "
-                "<decimal> <decimal> <word>."
-            ],
+        raise ValueError(
+            "Expected exactly 3 whitespace-separated values: "
+            "<longitude> <latitude> <word>."
         )
 
-    long, lat, target = parts
-    errors: list[str] = []
+    lon_raw, lat_raw, target = parts
 
-    lat, lat_errors = _parse_decimal(lat, "Latitude")
-    long, long_errors = _parse_decimal(long, "Longitude")
-    errors.extend(lat_errors)
-    errors.extend(long_errors)
-
-    if not target:
-        errors.append("Target description is missing.")
-    elif not WORD_RE.fullmatch(target):
-        errors.append(
-            f"Target description: '{target}' must contain only letters (A-Z or a-z)."
-        )
-
-    if errors:
-        return ValidationResult(
-            is_valid=False,
-            errors=errors,
-        )
-
-    return ValidationResult(
-        is_valid=True,
-        parsed=ParsedPayload(
-            long=long,
-            lat=lat,
-            target=target,
-        ),
+    return ParsedPayload.model_validate(
+        {
+            "lon": lon_raw,
+            "lat": lat_raw,
+            "target": target,
+        }
     )
 
 
-def format_reply(result: ValidationResult) -> str:
-    if not result.is_valid:
-        error_block = "\n".join(f"- {error}" for error in result.errors)
-        return (
-            "Validation failed.\n"
-            "Please send data in this format:\n"
-            "<decimal> <decimal> <word>\n\n"
-            f"Errors:\n{error_block}"
-        )
-
-    assert result.parsed is not None
+def format_validation_error(exc: Exception) -> str:
+    if isinstance(exc, ValidationError):
+        lines: list[str] = []
+        for err in exc.errors():
+            field = ".".join(str(x) for x in err["loc"])
+            lines.append(f"- {field}: {err['msg']}")
+        error_block = "\n".join(lines)
+    else:
+        error_block = f"- {exc}"
 
     return (
-        "Validation successful.\n"
-        f"Longitude: {result.parsed.long}\n"
-        f"Latitude: {result.parsed.lat}\n"
-        f"Target description: {result.parsed.target}"
+        "Validation failed.\n"
+        "Please send data in this format:\n"
+        "<longitude> <latitude> <word>\n\n"
+        f"Errors:\n{error_block}"
+    )
+
+
+def format_success_reply(
+    payload: ParsedPayload,
+    *,
+    delivered_to_tak: bool,
+    retry_scheduled: bool = False,
+) -> str:
+    status_line = (
+        "Forwarded to TAK/ATAK successfully."
+        if delivered_to_tak
+        else "Validated, but TAK delivery failed for now. Retry is scheduled."
+        if retry_scheduled
+        else "Validation successful."
+    )
+
+    return (
+        f"{status_line}\n"
+        f"Longitude: {payload.lon}\n"
+        f"Latitude: {payload.lat}\n"
+        f"Target description: {payload.target}"
     )
