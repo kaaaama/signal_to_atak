@@ -1,7 +1,7 @@
 COMPOSE := docker compose
 BOT_RUN := $(COMPOSE) run --rm bot
 
-.PHONY: help up down restart build ps logs logs-bot shell lint test licenses \
+.PHONY: help up down restart build ps logs logs-bot shell lint test test-fast licenses \
 	migrate migrate-down migration revision dbshell
 
 help:
@@ -11,7 +11,8 @@ help:
 		"make logs-bot               Follow logs for the bot service" \
 		"make shell                  Open a shell inside the bot container" \
 		"make lint                   Run pylint for the application code" \
-		"make test                   Run pytest for the application code" \
+		"make test                   Rebuild the bot image and run pytest in Docker" \
+		"make test-fast              Run pytest in the current bot image" \
 		"make licenses               Generate LICENSES.md for direct Python dependencies" \
 		"make migrate                Apply Alembic migrations to head" \
 		"make migrate-down           Roll back one Alembic revision" \
@@ -34,6 +35,10 @@ lint:
 	$(COMPOSE) run --rm -e PYLINTHOME=/tmp/pylint bot pylint app
 
 test:
+	$(COMPOSE) build bot
+	$(COMPOSE) run --rm bot pytest -q
+
+test-fast:
 	$(COMPOSE) run --rm bot pytest
 
 licenses:

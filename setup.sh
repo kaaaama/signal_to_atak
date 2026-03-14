@@ -10,6 +10,7 @@ REGENERATE_CERTS=0
 
 SERVER_CERT_NAME=""
 WEB_HOSTNAME=""
+WEB_ALT_NAMES=""
 
 usage() {
   cat <<'USAGE'
@@ -35,7 +36,7 @@ What this script does:
   8. Runs configureInDocker.sh when needed.
   9. Re-patches CoreConfig.xml after cert/config generation and restarts takserver.
  10. Tries to authorize admin.pem for the TAK web UI with retries.
- 11. Imports admin.p12 into Chrome NSS DB if missing.
+ 11. Imports the TAK root CA into Chrome NSS DB and imports admin.p12 if missing.
  12. Starts signal-cli-rest-api, postgres, and bot (unless --no-start-app).
 
 
@@ -105,11 +106,27 @@ require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"
 }
 
+require_path() {
+  local kind="$1"
+  local path="$2"
+  [[ "$kind" == "file" && -f "$path" ]] && return 0
+  [[ "$kind" == "dir" && -d "$path" ]] && return 0
+  die "Missing $path"
+}
+
 compose() {
   (
     cd "$ROOT"
     BUILDKIT_PROGRESS=plain docker compose "$@"
   )
+}
+
+takserver_exec() {
+  compose exec takserver bash -lc "$1"
+}
+
+tak_certs_exec() {
+  takserver_exec "cd /opt/tak/certs && $1"
 }
 
 container_running() {
@@ -183,11 +200,39 @@ PY
   )"
 }
 
+add_unique() {
+  local -n items_ref="$1"
+  local value="$2"
+  local current
+
+  [[ -n "$value" ]] || return 0
+
+  for current in "${items_ref[@]:-}"; do
+    [[ "$current" == "$value" ]] && return 0
+  done
+
+  items_ref+=("$value")
+}
+
+default_web_alt_names() {
+  local names=()
+  add_unique names "$SERVER_CERT_NAME"
+  add_unique names "$WEB_HOSTNAME"
+  add_unique names "localhost"
+  add_unique names "127.0.0.1"
+  add_unique names "${TAK_WEB_IP:-}"
+
+  local IFS=,
+  printf '%s' "${names[*]}"
+}
+
 init_runtime_defaults() {
   SERVER_CERT_NAME="${TAK_SERVER_CERT_NAME:-${TAK_SERVER_HOSTNAME:-takserver}}"
-  WEB_HOSTNAME="${TAK_WEB_HOSTNAME:-$SERVER_CERT_NAME}"
+  WEB_HOSTNAME="${TAK_WEB_HOSTNAME:-localhost}"
+  WEB_ALT_NAMES="${TAK_WEB_ALT_NAMES:-$(default_web_alt_names)}"
   export TAK_SERVER_CERT_NAME="$SERVER_CERT_NAME"
   export TAK_WEB_HOSTNAME="$WEB_HOSTNAME"
+  export TAK_WEB_ALT_NAMES="$WEB_ALT_NAMES"
 }
 
 ensure_writable() {
@@ -204,13 +249,14 @@ ensure_writable() {
 }
 
 validate_repo_layout() {
-  cp "$ROOT/infra/tak/tak/CoreConfig.example.xml" "$ROOT/infra/tak/tak/CoreConfig.xml"
-  [[ -f "$ROOT/docker-compose.yml" ]] || die "Missing docker-compose.yml in $ROOT"
-  [[ -f "$ROOT/.env" ]] || die "Missing .env in $ROOT"
-  [[ -f "$ROOT/infra/tak/docker/Dockerfile.takserver" ]] || die "Missing $ROOT/infra/tak/docker/Dockerfile.takserver"
-  [[ -f "$ROOT/infra/tak/docker/Dockerfile.takserver-db" ]] || die "Missing $ROOT/infra/tak/docker/Dockerfile.takserver-db"
-  [[ -d "$ROOT/infra/tak/tak" ]] || die "Missing $ROOT/infra/tak/tak"
-  [[ -f "$ROOT/infra/tak/tak/CoreConfig.xml" ]] || die "Missing $ROOT/infra/tak/tak/CoreConfig.xml"
+  require_path file "$ROOT/docker-compose.yml"
+  require_path file "$ROOT/.env"
+  require_path file "$ROOT/infra/tak/docker/Dockerfile.takserver"
+  require_path file "$ROOT/infra/tak/docker/Dockerfile.takserver-db"
+  require_path dir "$ROOT/infra/tak/tak"
+  if [[ ! -f "$ROOT/infra/tak/tak/CoreConfig.xml" ]]; then
+    cp "$ROOT/infra/tak/tak/CoreConfig.example.xml" "$ROOT/infra/tak/tak/CoreConfig.xml"
+  fi
 }
 
 check_env_keys() {
@@ -418,6 +464,109 @@ purge_existing_certs_if_requested() {
   rm -f     "$cert_dir"/admin.*     "$cert_dir"/phone1.*     "$cert_dir"/signal_sender.*     "$cert_dir"/takserver.*     "$cert_dir"/localhost.*     "$cert_dir"/"${SERVER_CERT_NAME}".*     "$cert_dir"/truststore-root.*     "$cert_dir"/fed-truststore.*     "$cert_dir"/ca.*     "$cert_dir"/*.jks     2>/dev/null || true
 }
 
+server_cert_has_required_sans() {
+  local cert_path="$1"
+  local san
+  local san_text=""
+
+  [[ -f "$cert_path" ]] || return 1
+  san_text="$(openssl x509 -in "$cert_path" -noout -ext subjectAltName 2>/dev/null || true)"
+  [[ -n "$san_text" ]] || return 1
+
+  for san in ${WEB_ALT_NAMES//,/ }; do
+    [[ -n "$san" ]] || continue
+    if ! grep -Eq "(DNS|IP)[:.]? ?${san//./\\.}([[:space:]]|,|$)" <<<"$san_text"; then
+      return 1
+    fi
+  done
+
+  return 0
+}
+
+generate_server_cert_with_sans() {
+  compose exec \
+    -e SERVER_CERT_NAME="$SERVER_CERT_NAME" \
+    -e CERT_ALT_NAMES="$WEB_ALT_NAMES" \
+    takserver \
+    bash -lc '
+      set -Eeuo pipefail
+      cd /opt/tak/certs
+      . ./cert-metadata.sh
+      cd "$DIR"
+
+      config_path="config-${SERVER_CERT_NAME}.cfg"
+      cp ../config.cfg "$config_path"
+
+      {
+        echo
+        echo "subjectAltName = @alt_names"
+        echo
+        echo "[alt_names]"
+
+        dns_i=1
+        ip_i=1
+        IFS="," read -r -a san_list <<< "${CERT_ALT_NAMES:-}"
+
+        for san in "${san_list[@]}"; do
+          san="${san#"${san%%[![:space:]]*}"}"
+          san="${san%"${san##*[![:space:]]}"}"
+          [[ -n "$san" ]] || continue
+
+          if [[ $san =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || [[ $san == *:* ]]; then
+            echo "IP.${ip_i} = $san"
+            ((ip_i++))
+          else
+            echo "DNS.${dns_i} = $san"
+            ((dns_i++))
+          fi
+        done
+
+        if [[ $dns_i -eq 1 && $ip_i -eq 1 ]]; then
+          echo "DNS.1 = ${SERVER_CERT_NAME}"
+        fi
+      } >> "$config_path"
+
+      SUBJ="${SUBJBASE}CN=${SERVER_CERT_NAME}"
+      openssl req -new -newkey rsa:2048 -sha256 \
+        -keyout "${SERVER_CERT_NAME}.key" \
+        -passout pass:${PASS} \
+        -out "${SERVER_CERT_NAME}.csr" \
+        -subj "$SUBJ"
+
+      openssl x509 -sha256 -req -days 730 \
+        -in "${SERVER_CERT_NAME}.csr" \
+        -CA ca.pem \
+        -CAkey ca-do-not-share.key \
+        -out "${SERVER_CERT_NAME}.pem" \
+        -set_serial 0x$(openssl rand -hex 8) \
+        -passin pass:${CAPASS} \
+        -extensions server \
+        -extfile "$config_path"
+
+      cat ca.pem >> "${SERVER_CERT_NAME}.pem"
+
+      openssl pkcs12 -export \
+        -in "${SERVER_CERT_NAME}.pem" \
+        -inkey "${SERVER_CERT_NAME}.key" \
+        -out "${SERVER_CERT_NAME}.p12" \
+        -name "${SERVER_CERT_NAME}" \
+        -CAfile ca.pem \
+        -passin pass:${PASS} \
+        -passout pass:${PASS}
+
+      keytool -importkeystore \
+        -deststorepass "${PASS}" \
+        -destkeypass "${PASS}" \
+        -destkeystore "${SERVER_CERT_NAME}.jks" \
+        -srckeystore "${SERVER_CERT_NAME}.p12" \
+        -srcstoretype PKCS12 \
+        -srcstorepass "${PASS}" \
+        -alias "${SERVER_CERT_NAME}"
+
+      chmod og-rwx "${SERVER_CERT_NAME}.key"
+    '
+}
+
 generate_missing_certs() {
   if [[ "$SKIP_CERTS" -eq 1 ]]; then
     log "Skipping certificate generation"
@@ -434,7 +583,7 @@ generate_missing_certs() {
 
   if [[ ! -f "$cert_dir/ca.pem" ]]; then
     log "Generating TAK root CA"
-    compose exec takserver bash -lc "cd /opt/tak/certs && ./makeRootCa.sh"
+    tak_certs_exec "./makeRootCa.sh"
     changed=1
   else
     log "Root CA already exists: $cert_dir/ca.pem"
@@ -442,31 +591,28 @@ generate_missing_certs() {
 
   if [[ ! -f "$server_jks" ]]; then
     log "Generating TAK server certificate for '${SERVER_CERT_NAME}'"
-    compose exec takserver bash -lc "cd /opt/tak/certs && ./makeCert.sh server '${SERVER_CERT_NAME}'"
+    generate_server_cert_with_sans
+    changed=1
+  elif ! server_cert_has_required_sans "$cert_dir/${SERVER_CERT_NAME}.pem"; then
+    log "Regenerating TAK server certificate for '${SERVER_CERT_NAME}' to refresh SANs: ${WEB_ALT_NAMES}"
+    rm -f "$cert_dir/${SERVER_CERT_NAME}".{pem,key,csr,p12,jks} "$cert_dir/config-${SERVER_CERT_NAME}.cfg"
+    generate_server_cert_with_sans
     changed=1
   else
     log "TAK server certificate already exists: $server_jks"
   fi
 
-  if [[ ! -f "$cert_dir/admin.pem" || ! -f "$cert_dir/admin.p12" ]]; then
-    log "Generating TAK client certificate: admin"
-    compose exec takserver bash -lc "cd /opt/tak/certs && ./makeCert.sh client admin"
+  if ensure_client_cert "$cert_dir" "admin"; then
     changed=1
-  else
-    log "Admin client certificate already exists"
   fi
 
-  if [[ ! -f "$cert_dir/phone1.pem" || ! -f "$cert_dir/phone1.p12" ]]; then
-    log "Generating TAK client certificate: phone1"
-    compose exec takserver bash -lc "cd /opt/tak/certs && ./makeCert.sh client phone1"
+  if ensure_client_cert "$cert_dir" "phone1"; then
     changed=1
-  else
-    log "Phone client certificate already exists"
   fi
 
   if [[ ! -f "$cert_dir/signal_sender.pem" || ! -f "$cert_dir/signal_sender.key" ]]; then
     log "Generating TAK client certificate: signal_sender"
-    compose exec takserver bash -lc "cd /opt/tak/certs && ./makeCert.sh client signal_sender"
+    tak_certs_exec "./makeCert.sh client signal_sender"
     changed=1
   else
     log "Signal sender client certificate already exists"
@@ -474,7 +620,7 @@ generate_missing_certs() {
   sudo chown -R "$USER:$USER" "$ROOT/infra/tak/tak/certs/files"
   if [[ "$changed" -eq 1 || "$FORCE_RECONFIGURE" -eq 1 ]]; then
     log "Running configureInDocker.sh"
-    compose exec takserver bash -lc "cd /opt/tak && ./configureInDocker.sh"
+    takserver_exec "cd /opt/tak && ./configureInDocker.sh"
   else
     log "No cert changes detected and --force-reconfigure not set"
   fi
@@ -499,6 +645,14 @@ nss_list_nicknames() {
           if (length(line)) print line
         }
       '
+}
+
+ensure_nss_db() {
+  mkdir -p "$HOME/.pki/nssdb"
+
+  if [[ ! -f "$HOME/.pki/nssdb/cert9.db" ]]; then
+    certutil -N -d sql:"$HOME/.pki/nssdb" --empty-password >/dev/null 2>&1 || true
+  fi
 }
 
 pem_sha256_fingerprint() {
@@ -593,33 +747,75 @@ delete_nss_certs_with_same_subject_as_pem() {
   done < <(nss_list_nicknames)
 }
 
+require_nss_base_tools() {
+  if ! command -v certutil >/dev/null 2>&1; then
+    warn "certutil not found; install libnss3-tools if you want automatic Chrome/NSS import"
+    return 1
+  fi
+
+  if ! command -v openssl >/dev/null 2>&1; then
+    warn "openssl not found; skipping automatic Chrome/NSS import"
+    return 1
+  fi
+
+  return 0
+}
+
+require_pk12util() {
+  if ! command -v pk12util >/dev/null 2>&1; then
+    warn "pk12util not found; install libnss3-tools if you want automatic Chrome/NSS import"
+    return 1
+  fi
+
+  return 0
+}
+
+ensure_client_cert() {
+  local cert_dir="$1"
+  local name="$2"
+
+  if [[ ! -f "$cert_dir/$name.pem" || ! -f "$cert_dir/$name.p12" ]]; then
+    log "Generating TAK client certificate: $name"
+    tak_certs_exec "./makeCert.sh client '$name'"
+    return 0
+  fi
+
+  log "${name} client certificate already exists"
+  return 1
+}
+
+import_ca_trust_chrome() {
+  local pem="$ROOT/infra/tak/tak/certs/files/ca-trusted.pem"
+  local nick="TAK Root CA"
+  local existing_nick=""
+
+  [[ -f "$pem" ]] || { warn "ca-trusted.pem not found, skipping Chrome trust import"; return; }
+  require_nss_base_tools || return
+  ensure_nss_db
+
+  if [[ "$REGENERATE_CERTS" -eq 1 ]]; then
+    delete_nss_certs_with_same_subject_as_pem "$pem"
+  fi
+
+  existing_nick="$(find_nss_nick_by_pem "$pem" || true)"
+  if [[ -n "$existing_nick" ]]; then
+    log "TAK CA already present in Chrome NSS DB as: $existing_nick"
+    return
+  fi
+
+  log "Importing TAK root CA into Chrome NSS DB as a trusted authority"
+  certutil -A -d sql:"$HOME/.pki/nssdb" -n "$nick" -t "C,," -i "$pem"
+}
+
 import_admin_p12_chrome() {
   local p12="$ROOT/infra/tak/tak/certs/files/admin.p12"
   local pem="$ROOT/infra/tak/tak/certs/files/admin.pem"
 
   [[ -f "$p12" ]] || { warn "admin.p12 not found, skipping Chrome NSS import"; return; }
   [[ -f "$pem" ]] || { warn "admin.pem not found, skipping Chrome NSS import"; return; }
-
-  if ! command -v pk12util >/dev/null 2>&1; then
-    warn "pk12util not found; install libnss3-tools if you want automatic Chrome/NSS import"
-    return
-  fi
-
-  if ! command -v certutil >/dev/null 2>&1; then
-    warn "certutil not found; install libnss3-tools if you want automatic Chrome/NSS import"
-    return
-  fi
-
-  if ! command -v openssl >/dev/null 2>&1; then
-    warn "openssl not found; skipping automatic Chrome/NSS import"
-    return
-  fi
-
-  mkdir -p "$HOME/.pki/nssdb"
-
-  if [[ ! -f "$HOME/.pki/nssdb/cert9.db" ]]; then
-    certutil -N -d sql:"$HOME/.pki/nssdb" --empty-password >/dev/null 2>&1 || true
-  fi
+  require_nss_base_tools || return
+  require_pk12util || return
+  ensure_nss_db
 
   if [[ "$REGENERATE_CERTS" -eq 1 ]]; then
     delete_nss_certs_with_same_subject_as_pem "$pem"
@@ -695,7 +891,8 @@ TAK web UI:
   https://${WEB_HOSTNAME}:8443/setup/
 
 Manual steps still required:
-  1. If Chrome import failed, import admin.p12 manually or via pk12util.
+  1. If the browser still shows "Not secure", import ca-trusted.pem into your browser or NSS trust store.
+     The admin.p12 file is for client authentication, not server trust.
   2. Copy truststore-root.p12 and phone1.p12 to your phone.
   3. In ATAK: Settings -> General Settings -> Network Settings:
        - SSL/TLS Truststore -> truststore-root.p12
@@ -734,6 +931,7 @@ main() {
   start_tak_stack
   generate_missing_certs
   restart_takserver_if_needed
+  import_ca_trust_chrome
   import_admin_p12_chrome
   start_app_stack
   print_summary

@@ -85,6 +85,13 @@ class CotTypeCatalogService:
         """Get the path to the CoT types XML catalog."""
         return Path(__file__).resolve().parent.parent.parent / "assets" / "CoTtypes.xml"
 
+    def _normalize_cot_code(self, cot: str) -> str:
+        """Normalize CoT codes"""
+        parts = cot.split("-")
+        if len(parts) > 1 and parts[1] == ".":
+            parts[1] = "o"
+        return "-".join(parts)
+
     @lru_cache(maxsize=1)
     def load_catalog(self) -> tuple[CotTypeEntry, ...]:
         """Load and cache CoT type entries from the XML catalog."""
@@ -94,7 +101,7 @@ class CotTypeCatalogService:
 
         entries: list[CotTypeEntry] = []
         for elem in root.findall(".//cot"):
-            cot = (elem.attrib.get("cot") or "").strip()
+            cot = self._normalize_cot_code((elem.attrib.get("cot") or "").strip())
             full = (elem.attrib.get("full") or "").strip()
             desc = (elem.attrib.get("desc") or "").strip()
 
@@ -183,7 +190,7 @@ class CotTypeCatalogService:
 
         if best is None:
             fallback = CotTypeEntry(
-                cot="a-.-G-U",
+                cot="a-o-G-U",
                 full="Gnd/Unit",
                 desc="GROUND UNIT",
                 normalized_full="gnd unit",
