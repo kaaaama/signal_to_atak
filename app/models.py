@@ -1,3 +1,5 @@
+"""Database models and lightweight message identity types."""
+
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -7,17 +9,23 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 class Base(DeclarativeBase):
+    """Base class for SQLAlchemy declarative models."""
+
     pass
 
 
 @dataclass(frozen=True)
 class MessageKey:
+    """Composite identifier for a Signal message tracked in storage."""
+
     source: str
     message_timestamp: int
     raw_text: str
 
 
 class ProcessedMessage(Base):
+    """Persisted processing record for a Signal message and its CoT lifecycle."""
+
     __tablename__ = "processed_messages"
 
     __table_args__ = (

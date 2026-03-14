@@ -1,12 +1,14 @@
+"""Validation helpers for parsing Signal message payloads."""
+
 from decimal import Decimal
 
 from pydantic import BaseModel, ValidationError, field_validator
 
 
 class ParsedPayload(BaseModel):
-    """Parsed and validated payload from a Signal message.
+    """Parsed and validated Signal message payload.
 
-    Contains longitude, latitude, and target description.
+    The message format is ``<latitude> <longitude> <target phrase>``.
     """
     lon: Decimal
     lat: Decimal
@@ -50,7 +52,12 @@ class ValidationService:
     def parse_message(self, text: str) -> ParsedPayload:
         """Parse and validate a Signal message text.
 
-        Expected format: <longitude> <latitude> <target phrase>
+        The parser treats the first token as latitude, the second as longitude,
+        and the remaining tokens as the free-form target description. It does
+        only lightweight token splitting here and delegates numeric range checks
+        and target normalization to ``ParsedPayload`` validation.
+
+        Expected format: ``<latitude> <longitude> <target phrase>``.
 
         Args:
             text: The message text to parse.
@@ -68,7 +75,7 @@ class ValidationService:
         if len(parts) < 3:
             raise ValueError(
                 "Expected at least 3 whitespace-separated values: "
-                "<longitude> <latitude> <target phrase>."
+                "<latitude> <longitude> <target phrase>."
             )
 
         lat_raw = parts[0]
@@ -85,6 +92,10 @@ class ValidationService:
 
     def format_validation_error(self, exc: Exception) -> str:
         """Format a validation error into a user-friendly string.
+
+        Pydantic validation errors are expanded into a bullet list so the user
+        can see which field failed and why. Any non-Pydantic exception is shown
+        as a single bullet to keep the reply structure consistent.
 
         Args:
             exc: The exception to format.
@@ -104,7 +115,7 @@ class ValidationService:
         return (
             "Validation failed.\n"
             "Please send data in this format:\n"
-            "<longitude> <latitude> <target phrase>\n\n"
+            "<latitude> <longitude> <target phrase>\n\n"
             f"Errors:\n{error_block}"
         )
 
@@ -116,6 +127,10 @@ class ValidationService:
         retry_scheduled: bool = False,
     ) -> str:
         """Format a success reply with payload details and delivery status.
+
+        The reply always echoes the normalized payload values back to the user.
+        The status line reflects whether the CoT event was delivered
+        immediately, only validated locally, or queued for background retry.
 
         Args:
             payload: The parsed payload.

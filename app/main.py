@@ -1,3 +1,5 @@
+"""Application entry point for the Signal-to-TAK bridge."""
+
 from __future__ import annotations
 
 import asyncio
@@ -25,7 +27,12 @@ class BackgroundTaskManager:
         self._lock = asyncio.Lock()
 
     async def ensure_tasks_running(self) -> None:
-        """Ensure background tasks are running."""
+        """Ensure background tasks are running.
+
+        The method is safe to call on every incoming message. It uses a lock so
+        concurrent handlers do not start duplicate retry or replay tasks, and
+        it recreates tasks if either loop exited unexpectedly.
+        """
         async with self._lock:
             if self._retry_task is None or self._retry_task.done():
                 self._retry_task = asyncio.create_task(self.dispatcher.retry_forever())
@@ -39,7 +46,7 @@ class BackgroundTaskManager:
 
 
 class ValidateCommand(Command):
-    """Handles incoming Signal messages."""
+    """Claim, process, and reply to incoming Signal messages."""
 
     def __init__(
         self,
@@ -57,8 +64,11 @@ class ValidateCommand(Command):
     async def handle(self, context: Context) -> None:
         """Handle an incoming Signal message.
 
-        Processes the message text, claims it for processing, dispatches it,
-        and sends a reply back to the sender.
+        This is the integration point called by ``signalbot`` for each inbound
+        message. It makes sure background workers are alive, ignores empty
+        messages, claims the message in PostgreSQL to avoid duplicate handling,
+        delegates the actual processing to the dispatcher, and then sends the
+        generated reply back over Signal.
 
         Args:
             context: SignalBot context containing the message.
@@ -102,6 +112,7 @@ class Application:
     """Main application service for the Signal to TAK bot."""
 
     def __init__(self) -> None:
+        """Initialize the application container without side effects."""
         self.settings = Settings.from_env()
         self.bot: SignalBot | None = None
         self.pg: PostgresStore | None = None
@@ -111,13 +122,22 @@ class Application:
         self.command: ValidateCommand | None = None
 
     def setup_logging(self) -> None:
-        """Set up application logging."""
+        """Set up application logging.
+
+        Logging level selection is driven by the environment-backed settings so
+        the container can switch verbosity without code changes.
+        """
         enable_console_logging(
             getattr(logging, self.settings.log_level.upper(), logging.INFO)
         )
 
     def build_components(self) -> None:
-        """Build and wire application components."""
+        """Build and wire application components.
+
+        This creates the database store, TAK client, validation and CoT
+        services, dispatcher, background task manager, and Signal command in the
+        order required by their dependencies.
+        """
         self.pg = PostgresStore(
             database_url=self.settings.database_url,
             pool_size=self.settings.db_pool_size,
@@ -142,7 +162,11 @@ class Application:
         )
 
     def build_bot(self) -> None:
-        """Build the SignalBot instance."""
+        """Build the SignalBot instance and register the command handler.
+
+        The bot uses in-memory signalbot storage because durable message state
+        is already tracked in PostgreSQL by this application.
+        """
         self.bot = SignalBot(
             Config(
                 signal_service=self.settings.signal_service,
@@ -154,7 +178,11 @@ class Application:
         self.bot.register(self.command, contacts=True)
 
     def run(self) -> None:
-        """Run the application."""
+        """Configure logging, assemble components, and start the bot.
+
+        This is the high-level bootstrap sequence used both by the CLI entry
+        point and by any embedding code that wants to run the full service.
+        """
         self.setup_logging()
         self.build_components()
         self.build_bot()
@@ -163,7 +191,11 @@ class Application:
 
 
 def main() -> None:
-    """Main entry point."""
+    """Run the application from the module entry point.
+
+    Keeping the entry point as a thin wrapper makes the startup sequence easy
+    to reuse in tests or alternative launchers.
+    """
     app = Application()
     app.run()
 

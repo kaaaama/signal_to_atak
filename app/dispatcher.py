@@ -1,3 +1,5 @@
+"""Message orchestration between validation, storage, and TAK delivery."""
+
 import asyncio
 import logging
 from datetime import timedelta
@@ -11,6 +13,8 @@ from app.validation import ParsedPayload, ValidationService
 
 
 class MessageDispatcher:
+    """Coordinate parsing, persistence, delivery retries, and CoT replay."""
+
     def __init__(
         self,
         *,
@@ -34,6 +38,14 @@ class MessageDispatcher:
         message_timestamp: int,
         raw_text: str,
     ) -> str:
+        """Validate, persist, deliver, and reply for a newly claimed message.
+
+        The dispatcher first parses the Signal text. Invalid messages are
+        marked complete immediately and return a validation reply. Valid
+        messages get a stable UID plus stored payload metadata before the
+        dispatcher attempts immediate TAK delivery. Successful delivery schedules
+        future replay; failed delivery leaves the row retryable in the database.
+        """
         key = MessageKey(
             source=source,
             message_timestamp=message_timestamp,
@@ -96,6 +108,12 @@ class MessageDispatcher:
         return reply
 
     async def retry_forever(self) -> None:
+        """Continuously retry messages that previously failed TAK delivery.
+
+        Each loop iteration claims a bounded batch of eligible rows, retries
+        them one by one, logs any top-level loop failure, and then sleeps for
+        the configured poll interval.
+        """
         while True:
             try:
                 now = utc_now()
@@ -124,6 +142,13 @@ class MessageDispatcher:
             await asyncio.sleep(self.settings.retry_loop_interval_sec)
 
     async def _retry_one(self, key: MessageKey) -> None:
+        """Retry TAK delivery for a single stored message.
+
+        The payload is reconstructed from the original raw text instead of the
+        stored columns so validation rules stay centralized. If the message is
+        no longer valid under current parsing rules, the row is finalized as an
+        invalid message rather than retried indefinitely.
+        """
         try:
             payload = self.validation_service.parse_message(key.raw_text)
         except Exception as exc:
@@ -170,6 +195,13 @@ class MessageDispatcher:
         )
 
     async def replay_active_events_forever(self) -> None:
+        """Continuously rebroadcast active CoT events until they expire.
+
+        The loop first clears rows whose active lifetime is over, then leases a
+        batch of replayable rows, sends each event again, and sleeps until the
+        next poll cycle. Exceptions at the loop level are logged and do not stop
+        the background task.
+        """
         while True:
             try:
                 now = utc_now()
@@ -196,6 +228,13 @@ class MessageDispatcher:
             await asyncio.sleep(self.settings.cot_rebroadcast_poll_interval_sec)
 
     async def _replay_one(self, key: MessageKey) -> None:
+        """Replay one active CoT event from persisted payload data.
+
+        This path reads the normalized payload back from the database, rebuilds
+        a fresh CoT XML document with updated timestamps, and reschedules the
+        next replay on success. Missing payload pieces are treated as a no-op
+        because replay requires a fully materialized, previously validated row.
+        """
         row = await self.pg.get_processed_message(key=key)
         if row is None:
             return
@@ -253,6 +292,13 @@ class MessageDispatcher:
         base_delay_sec: float,
         phase: str,
     ) -> tuple[bool, str | None]:
+        """Attempt TAK delivery multiple times with linear backoff.
+
+        The CoT payload is built once per call and reused across attempts. Each
+        failed send records the latest error string and sleeps for
+        ``base_delay_sec * attempt`` before the next try. The return value is a
+        ``(delivered, error_text)`` tuple suitable for database updates.
+        """
         last_error: str | None = None
         cot_xml = self.cot_service.build_cot_xml(
             uid=uid,

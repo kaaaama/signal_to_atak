@@ -1,3 +1,5 @@
+"""CoT type catalog loading and fuzzy target matching."""
+
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -85,7 +87,7 @@ class CotTypeCatalogService:
 
     @lru_cache(maxsize=1)
     def load_catalog(self) -> tuple[CotTypeEntry, ...]:
-        """Load CoT type entries from the XML catalog."""
+        """Load and cache CoT type entries from the XML catalog."""
         path = self._catalog_path()
         tree = ET.parse(path)
         root = tree.getroot()
@@ -147,7 +149,7 @@ class CotTypeCatalogService:
             target_text: The target description to match.
 
         Returns:
-            The best matching CotMatch, or fallback if none.
+            The best matching ``CotMatch`` or the generic ground-unit fallback.
         """
         original = " ".join(target_text.strip().split())
         if not original:
@@ -188,4 +190,3 @@ class CotTypeCatalogService:
             return CotMatch(entry=fallback, canonical_query=query, score=0)
 
         return best
-
