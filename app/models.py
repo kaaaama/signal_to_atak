@@ -1,4 +1,5 @@
 """Database models and lightweight message identity types."""
+# pylint: disable=not-callable
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -20,8 +21,6 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 class Base(DeclarativeBase):
     """Base class for SQLAlchemy declarative models."""
-
-    pass
 
 
 @dataclass(frozen=True)
@@ -59,10 +58,24 @@ class ProcessedMessage(Base):
     lat: Mapped[Decimal | None] = mapped_column(Numeric(18, 10), nullable=True)
     target: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    active_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    last_broadcast_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    next_replay_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    replay_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    active_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    last_broadcast_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    next_replay_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    replay_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
     last_replay_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
@@ -107,10 +120,20 @@ class TakDeliveryJob(Base):
     payload_xml: Mapped[str] = mapped_column(Text, nullable=False)
     phase: Mapped[str] = mapped_column(Text, nullable=False)
     priority: Mapped[int] = mapped_column(Integer, nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="pending")
-    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        server_default="pending",
+    )
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
     claimed_by: Mapped[str | None] = mapped_column(Text, nullable=True)
-    claim_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    claim_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(

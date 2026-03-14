@@ -20,7 +20,7 @@ class ParsedPayload(BaseModel):
         """Validate longitude is within [-180, 180] and finite."""
         if not value.is_finite():
             raise ValueError("Longitude must be a finite decimal number.")
-        if not (Decimal("-180") <= value <= Decimal("180")):
+        if not Decimal("-180") <= value <= Decimal("180"):
             raise ValueError("Longitude must be in range [-180, 180].")
         return value
 
@@ -30,7 +30,7 @@ class ParsedPayload(BaseModel):
         """Validate latitude is within [-90, 90] and finite."""
         if not value.is_finite():
             raise ValueError("Latitude must be a finite decimal number.")
-        if not (Decimal("-90") <= value <= Decimal("90")):
+        if not Decimal("-90") <= value <= Decimal("90"):
             raise ValueError("Latitude must be in range [-90, 90].")
         return value
 

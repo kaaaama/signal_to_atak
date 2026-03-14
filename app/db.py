@@ -1,6 +1,6 @@
 
 """Async PostgreSQL persistence for processed Signal messages."""
-
+# pylint: disable=not-callable
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import and_, func, or_, select, update

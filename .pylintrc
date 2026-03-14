@@ -1,0 +1,20 @@
+[MAIN]
+ignore=__pycache__
+jobs=0
+py-version=3.12
+extension-pkg-allow-list=lxml
+
+[MESSAGES CONTROL]
+disable=
+    broad-exception-caught,
+    too-few-public-methods,
+    too-many-arguments,
+    too-many-instance-attributes
+
+[FORMAT]
+max-line-length=100
+
+[BASIC]
+good-names=
+    dt,
+    pg

@@ -9,8 +9,6 @@ from app.settings import Settings
 class TakSendError(Exception):
     """Raised when a TAK send attempt fails."""
 
-    pass
-
 
 class TakTlsClient:
     """Serialize CoT delivery over a TLS connection to the TAK server."""
