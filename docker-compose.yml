@@ -34,6 +34,19 @@ services:
       timeout: 5s
       retries: 5
 
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: rabbitmq
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   tak-db:
     build:
       context: ./infra/tak
@@ -87,6 +100,8 @@ services:
       signal-cli-rest-api:
         condition: service_started
       postgres:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
       takserver:
         condition: service_started

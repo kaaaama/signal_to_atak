@@ -21,6 +21,14 @@ class Settings(BaseSettings):
     phone_number: str = Field(validation_alias="PHONE_NUMBER")
     signal_service: str = Field(validation_alias="SIGNAL_SERVICE")
     database_url: str = Field(validation_alias="DATABASE_URL")
+    rabbitmq_url: str = Field(
+        default="amqp://guest:guest@rabbitmq:5672/",
+        validation_alias="RABBITMQ_URL",
+    )
+    tak_delivery_queue_name: str = Field(
+        default="tak_delivery",
+        validation_alias="TAK_DELIVERY_QUEUE_NAME",
+    )
 
     db_pool_size: int = Field(default=5, validation_alias="DB_POOL_SIZE")
     db_max_overflow: int = Field(default=10, validation_alias="DB_MAX_OVERFLOW")
@@ -90,21 +98,9 @@ class Settings(BaseSettings):
         default_factory=socket.gethostname,
         validation_alias="INSTANCE_ID",
     )
-    tak_delivery_batch_size: int = Field(
-        default=100,
-        validation_alias="TAK_DELIVERY_BATCH_SIZE",
-    )
-    tak_delivery_poll_interval_sec: float = Field(
-        default=1.0,
-        validation_alias="TAK_DELIVERY_POLL_INTERVAL_SEC",
-    )
-    tak_delivery_claim_lease_sec: float = Field(
-        default=30.0,
-        validation_alias="TAK_DELIVERY_CLAIM_LEASE_SEC",
-    )
-    tak_delivery_wait_poll_interval_sec: float = Field(
-        default=0.2,
-        validation_alias="TAK_DELIVERY_WAIT_POLL_INTERVAL_SEC",
+    rabbitmq_reconnect_interval_sec: float = Field(
+        default=5.0,
+        validation_alias="RABBITMQ_RECONNECT_INTERVAL_SEC",
     )
 
     @classmethod

@@ -1,15 +1,14 @@
 """Message orchestration between validation, storage, and TAK delivery."""
 
-import asyncio
 import logging
 from datetime import timedelta
 
-from app.cot import CotService
 from app.db import PostgresStore, utc_now
 from app.models import MessageKey
 from app.settings import Settings
-from app.tak_delivery import TakDeliveryService
-from app.validation import ParsedPayload, ValidationService
+from app.tak.cot import CotService
+from app.tak.delivery import TakDeliveryService
+from app.services.validation import ParsedPayload, ValidationService
 
 
 class MessageDispatcher:
@@ -43,8 +42,8 @@ class MessageDispatcher:
         The dispatcher first parses the Signal text. Invalid messages are
         marked complete immediately and return a validation reply. Valid
         messages get a stable UID plus stored payload metadata before the
-        dispatcher attempts immediate TAK delivery. Successful delivery schedules
-        future replay; failed delivery leaves the row retryable in the database.
+        dispatcher enqueues TAK delivery work in RabbitMQ. Actual TAK send
+        success or failure is handled asynchronously by the delivery worker.
         """
         key = MessageKey(
             source=source,
@@ -73,38 +72,26 @@ class MessageDispatcher:
             + timedelta(seconds=self.settings.active_cot_lifetime_sec),
         )
 
-        delivered, last_error = await self._send_with_retries(
-            key=key,
-            uid=uid,
-            payload=payload,
-            attempts=self.settings.immediate_retry_attempts,
-            base_delay_sec=self.settings.immediate_retry_delay_sec,
-            phase="immediate",
-        )
-
-        if delivered:
-            reply = self.validation_service.format_success_reply(
-                payload,
-                delivered_to_tak=True,
-            )
-            await self.pg.mark_delivered_and_schedule_replay(
-                key=key,
-                response_text=reply,
-                when=utc_now(),
-                replay_interval_sec=self.settings.cot_rebroadcast_interval_sec,
-            )
-            return reply
-
         reply = self.validation_service.format_success_reply(
             payload,
             delivered_to_tak=False,
-            retry_scheduled=True,
+            queued_for_delivery=True,
         )
-        await self.pg.mark_failed(
+        await self.pg.mark_delivery_queued(
             key=key,
-            is_valid=True,
             response_text=reply,
-            error_text=last_error or "Unknown TAK delivery error",
+            worker_note="Queued for immediate TAK delivery",
+        )
+        cot_xml = self.cot_service.build_cot_xml(
+            uid=uid,
+            payload=payload,
+            stale_seconds=self.settings.cot_stale_seconds,
+        )
+        await self.tak_delivery.send_event(
+            key=key,
+            uid=uid,
+            payload=cot_xml,
+            phase="immediate",
         )
         return reply
 
@@ -129,6 +116,7 @@ class MessageDispatcher:
                     limit=self.settings.retry_batch_size,
                     failed_before=failed_before,
                     processing_before=processing_before,
+                    now=now,
                 )
 
                 if batch:
@@ -161,39 +149,44 @@ class MessageDispatcher:
             )
             return
 
-        uid = self.cot_service.build_uid(key)
+        row = await self.pg.get_processed_message(key=key)
+        if row is None:
+            return
 
-        delivered, last_error = await self._send_with_retries(
-            key=key,
-            uid=uid,
-            payload=payload,
-            attempts=self.settings.immediate_retry_attempts,
-            base_delay_sec=self.settings.immediate_retry_delay_sec,
-            phase="background-retry",
-        )
-
-        if delivered:
-            reply = self.validation_service.format_success_reply(
-                payload,
-                delivered_to_tak=True,
-            )
-            await self.pg.mark_delivered_and_schedule_replay(
+        if row.active_until is not None and row.active_until <= utc_now():
+            await self.pg.mark_done(
                 key=key,
-                response_text=reply,
-                when=utc_now(),
-                replay_interval_sec=self.settings.cot_rebroadcast_interval_sec,
+                is_valid=True,
+                response_text=row.response_text
+                or self.validation_service.format_success_reply(
+                    payload,
+                    delivered_to_tak=False,
+                    retry_scheduled=True,
+                ),
             )
             return
 
-        await self.pg.mark_failed(
+        uid = self.cot_service.build_uid(key)
+        await self.pg.mark_delivery_queued(
             key=key,
-            is_valid=True,
-            response_text=self.validation_service.format_success_reply(
+            response_text=row.response_text
+            or self.validation_service.format_success_reply(
                 payload,
                 delivered_to_tak=False,
                 retry_scheduled=True,
             ),
-            error_text=last_error or "Unknown TAK delivery error",
+            worker_note="Queued for background TAK retry",
+        )
+        cot_xml = self.cot_service.build_cot_xml(
+            uid=uid,
+            payload=payload,
+            stale_seconds=self.settings.cot_stale_seconds,
+        )
+        await self.tak_delivery.send_event(
+            key=key,
+            uid=uid,
+            payload=cot_xml,
+            phase="background-retry",
         )
 
     async def replay_active_events_forever(self) -> None:
@@ -276,12 +269,7 @@ class MessageDispatcher:
                 phase="replay",
                 uid=row.uid,
             )
-            await self.pg.mark_replay_scheduled(
-                key=key,
-                when=utc_now(),
-                replay_interval_sec=self.settings.cot_rebroadcast_interval_sec,
-            )
-            self.log.info("Replayed active CoT event for %s", key)
+            self.log.info("Queued active CoT replay for %s", key)
         except Exception as exc:
             await self.pg.mark_replay_failed(
                 key=key,
@@ -289,66 +277,3 @@ class MessageDispatcher:
                 retry_after_sec=self.settings.retry_loop_interval_sec,
             )
             self.log.warning("Replay failed for %s: %s", key, exc)
-
-    async def _send_with_retries(
-        self,
-        *,
-        key: MessageKey,
-        uid: str,
-        payload: ParsedPayload,
-        attempts: int,
-        base_delay_sec: float,
-        phase: str,
-    ) -> tuple[bool, str | None]:
-        """Attempt TAK delivery multiple times with linear backoff.
-
-        The CoT payload is built once per call and reused across attempts. Each
-        failed send records the latest error string and sleeps for
-        ``base_delay_sec * attempt`` before the next try. The return value is a
-        ``(delivered, error_text)`` tuple suitable for database updates.
-        """
-        last_error: str | None = None
-        cot_xml = self.cot_service.build_cot_xml(
-            uid=uid,
-            payload=payload,
-            stale_seconds=self.settings.cot_stale_seconds,
-        )
-
-        for attempt in range(1, attempts + 1):
-            try:
-                self.log.info(
-                    "Sending CoT uid=%s phase=%s lat=%s lon=%s target=%s",
-                    uid,
-                    phase,
-                    payload.lat,
-                    payload.lon,
-                    payload.target,
-                )
-                await self.tak_delivery.send_event(
-                    key=key,
-                    payload=cot_xml,
-                    phase=phase,
-                    uid=uid,
-                )
-                self.log.info(
-                    "Delivered to TAK on %s attempt %d/%d for uid=%s",
-                    phase,
-                    attempt,
-                    attempts,
-                    uid,
-                )
-                return True, None
-            except Exception as exc:
-                last_error = str(exc)
-                self.log.warning(
-                    "TAK delivery failed on %s attempt %d/%d for uid=%s: %s",
-                    phase,
-                    attempt,
-                    attempts,
-                    uid,
-                    exc,
-                )
-                if attempt < attempts:
-                    await asyncio.sleep(base_delay_sec * attempt)
-
-        return False, last_error

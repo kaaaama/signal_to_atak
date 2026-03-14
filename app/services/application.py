@@ -1,21 +1,20 @@
 """Application assembly and startup."""
 
 from __future__ import annotations
-
 import logging
 
-from signalbot import Config, SignalBot, enable_console_logging
+from signalbot import Config, SignalBot, enable_console_logging, InMemoryConfig
 
-from app.services.background_task_manager import BackgroundTaskManager
-from app.cot import CotService
-from app.cot_type_catalog import CotTypeCatalogService
 from app.db import PostgresStore
 from app.dispatcher import MessageDispatcher
 from app.settings import Settings
-from app.tak_client import TakTlsClient
-from app.tak_delivery import TakDeliveryService
-from app.services.validate_command import ValidateCommand
-from app.validation import ValidationService
+from app.services.background_task_manager import BackgroundTaskManager
+from app.services.signal_command import SignalCommand
+from app.tak.client import TakTlsClient
+from app.tak.cot import CotService
+from app.tak.cot_type_catalog import CotTypeCatalogService
+from app.tak.delivery import TakDeliveryService
+from app.services.validation import ValidationService
 
 
 class Application:
@@ -33,7 +32,19 @@ class Application:
         self.cot_service: CotService | None = None
         self.dispatcher: MessageDispatcher | None = None
         self.task_manager: BackgroundTaskManager | None = None
-        self.command: ValidateCommand | None = None
+        self.command: SignalCommand | None = None
+
+    def run(self) -> None:
+        """Build all services and start the Signal bot event loop."""
+        self.setup_logging()
+        self.build_components()
+        self.build_bot()
+        self.schedule_startup_tasks()
+
+        try:
+            self.bot.start()
+        finally:
+            self._shutdown_after_run()
 
     def setup_logging(self) -> None:
         """Configure console logging using the configured log level."""
@@ -68,7 +79,7 @@ class Application:
             self.dispatcher,
             self.tak_delivery,
         )
-        self.command = ValidateCommand(
+        self.command = SignalCommand(
             pg=self.pg,
             dispatcher=self.dispatcher,
             task_manager=self.task_manager,
@@ -80,15 +91,31 @@ class Application:
             Config(
                 signal_service=self.settings.signal_service,
                 phone_number=self.settings.phone_number,
-                storage={"type": "in-memory"},
+                storage=InMemoryConfig(),
                 download_attachments=False,
             )
         )
         self.bot.register(self.command, contacts=True)
 
-    def run(self) -> None:
-        """Build all services and start the Signal bot event loop."""
-        self.setup_logging()
-        self.build_components()
-        self.build_bot()
-        self.bot.start()
+    def schedule_startup_tasks(self) -> None:
+        """Schedule background workers on the bot event loop before it starts."""
+        self.bot._event_loop.create_task(self.task_manager.ensure_tasks_running())
+
+    def _shutdown_after_run(self) -> None:
+        """Drain async resources after the bot loop exits."""
+        loop = self.bot._event_loop
+        if loop.is_closed():
+            return
+
+        loop.run_until_complete(self.shutdown())
+
+    async def shutdown(self) -> None:
+        """Close background tasks and network/database resources."""
+        if self.task_manager is not None:
+            await self.task_manager.shutdown()
+        if self.tak_delivery is not None:
+            await self.tak_delivery.close()
+        if self.tak_client is not None:
+            await self.tak_client.close()
+        if self.pg is not None:
+            await self.pg.close()

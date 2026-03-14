@@ -6,7 +6,7 @@ import asyncio
 import logging
 
 from app.dispatcher import MessageDispatcher
-from app.tak_delivery import TakDeliveryService
+from app.tak.delivery import TakDeliveryService
 
 
 class BackgroundTaskManager:
@@ -44,3 +44,27 @@ class BackgroundTaskManager:
                     self.dispatcher.replay_active_events_forever()
                 )
                 self.log.info("Started background active CoT replay loop")
+
+    async def shutdown(self) -> None:
+        """Cancel background tasks and wait for them to finish."""
+        async with self._lock:
+            tasks = [
+                task
+                for task in (
+                    self._delivery_task,
+                    self._retry_task,
+                    self._replay_task,
+                )
+                if task is not None and not task.done()
+            ]
+
+            for task in tasks:
+                task.cancel()
+
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+                self.log.info("Stopped background delivery, retry, and replay tasks")
+
+            self._delivery_task = None
+            self._retry_task = None
+            self._replay_task = None
