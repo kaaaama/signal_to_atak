@@ -10,6 +10,7 @@ from signalbot import Command, Config, Context, SignalBot, enable_console_loggin
 from app.db import PostgresStore
 from app.dispatcher import MessageDispatcher
 from app.settings import Settings
+from app.tak_delivery import TakDeliveryService
 from app.tak_client import TakTlsClient
 from app.validation import ValidationService
 from app.cot import CotService
@@ -19,9 +20,16 @@ from app.cot_type_catalog import CotTypeCatalogService
 class BackgroundTaskManager:
     """Manages background retry and replay tasks."""
 
-    def __init__(self, dispatcher: MessageDispatcher) -> None:
+    def __init__(
+        self,
+        dispatcher: MessageDispatcher,
+        tak_delivery: TakDeliveryService,
+    ) -> None:
+        """Store the dispatcher, delivery service, and task handles."""
         self.dispatcher = dispatcher
+        self.tak_delivery = tak_delivery
         self.log = logging.getLogger("bot.tasks")
+        self._delivery_task: asyncio.Task | None = None
         self._retry_task: asyncio.Task | None = None
         self._replay_task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
@@ -34,6 +42,12 @@ class BackgroundTaskManager:
         it recreates tasks if either loop exited unexpectedly.
         """
         async with self._lock:
+            if self._delivery_task is None or self._delivery_task.done():
+                self._delivery_task = asyncio.create_task(
+                    self.tak_delivery.delivery_worker_forever()
+                )
+                self.log.info("Started background TAK delivery worker")
+
             if self._retry_task is None or self._retry_task.done():
                 self._retry_task = asyncio.create_task(self.dispatcher.retry_forever())
                 self.log.info("Started background TAK retry loop")
@@ -117,6 +131,7 @@ class Application:
         self.bot: SignalBot | None = None
         self.pg: PostgresStore | None = None
         self.tak_client: TakTlsClient | None = None
+        self.tak_delivery: TakDeliveryService | None = None
         self.dispatcher: MessageDispatcher | None = None
         self.task_manager: BackgroundTaskManager | None = None
         self.command: ValidateCommand | None = None
@@ -144,17 +159,25 @@ class Application:
             max_overflow=self.settings.db_max_overflow,
         )
         self.tak_client = TakTlsClient(self.settings)
+        self.tak_delivery = TakDeliveryService(
+            pg=self.pg,
+            tak_client=self.tak_client,
+            settings=self.settings,
+        )
         self.validation_service = ValidationService()
         self.catalog_service = CotTypeCatalogService()
         self.cot_service = CotService(self.catalog_service)
         self.dispatcher = MessageDispatcher(
             pg=self.pg,
-            tak_client=self.tak_client,
+            tak_delivery=self.tak_delivery,
             settings=self.settings,
             validation_service=self.validation_service,
             cot_service=self.cot_service,
         )
-        self.task_manager = BackgroundTaskManager(self.dispatcher)
+        self.task_manager = BackgroundTaskManager(
+            self.dispatcher,
+            self.tak_delivery,
+        )
         self.command = ValidateCommand(
             pg=self.pg,
             dispatcher=self.dispatcher,

@@ -7,7 +7,7 @@ from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.models import MessageKey, ProcessedMessage
+from app.models import MessageKey, ProcessedMessage, TakDeliveryJob
 from app.validation import ParsedPayload
 
 
@@ -428,6 +428,125 @@ class PostgresStore:
             .where(ProcessedMessage.message_timestamp == key.message_timestamp)
             .where(ProcessedMessage.raw_text == key.raw_text)
         )
+
+        async with self.session_factory() as session:
+            result = await session.execute(stmt)
+            return result.scalar_one_or_none()
+
+    async def enqueue_delivery_job(
+        self,
+        *,
+        key: MessageKey,
+        uid: str,
+        payload_xml: str,
+        phase: str,
+        priority: int,
+        available_at: datetime,
+    ) -> int:
+        """Persist a TAK delivery job that can be claimed by any worker."""
+        async with self.session_factory() as session:
+            job = TakDeliveryJob(
+                source=key.source,
+                message_timestamp=key.message_timestamp,
+                raw_text=key.raw_text,
+                uid=uid,
+                payload_xml=payload_xml,
+                phase=phase,
+                priority=priority,
+                status="pending",
+                available_at=available_at,
+            )
+            session.add(job)
+            await session.flush()
+            job_id = job.id
+            await session.commit()
+            return job_id
+
+    async def claim_delivery_batch(
+        self,
+        *,
+        limit: int,
+        now: datetime,
+        claim_lease_sec: float,
+        instance_id: str,
+    ) -> list[TakDeliveryJob]:
+        """Claim pending or expired TAK delivery jobs for one worker."""
+        claim_expires_at = now + timedelta(seconds=claim_lease_sec)
+
+        async with self.session_factory() as session:
+            async with session.begin():
+                stmt = (
+                    select(TakDeliveryJob)
+                    .where(
+                        or_(
+                            and_(
+                                TakDeliveryJob.status == "pending",
+                                TakDeliveryJob.available_at <= now,
+                            ),
+                            and_(
+                                TakDeliveryJob.status == "claimed",
+                                TakDeliveryJob.claim_expires_at.is_not(None),
+                                TakDeliveryJob.claim_expires_at <= now,
+                            ),
+                        )
+                    )
+                    .order_by(
+                        TakDeliveryJob.priority.asc(),
+                        TakDeliveryJob.available_at.asc(),
+                        TakDeliveryJob.created_at.asc(),
+                    )
+                    .limit(limit)
+                    .with_for_update(skip_locked=True)
+                )
+
+                jobs = (await session.execute(stmt)).scalars().all()
+                for job in jobs:
+                    job.status = "claimed"
+                    job.claimed_by = instance_id
+                    job.claim_expires_at = claim_expires_at
+                    job.updated_at = now
+
+                return jobs
+
+    async def mark_delivery_done(self, *, job_id: int) -> None:
+        """Mark a TAK delivery job as completed successfully."""
+        stmt = (
+            update(TakDeliveryJob)
+            .where(TakDeliveryJob.id == job_id)
+            .values(
+                status="done",
+                claim_expires_at=None,
+                claimed_by=None,
+                last_error=None,
+                updated_at=func.now(),
+            )
+        )
+
+        async with self.session_factory() as session:
+            await session.execute(stmt)
+            await session.commit()
+
+    async def mark_delivery_failed(self, *, job_id: int, error_text: str) -> None:
+        """Mark a TAK delivery job as failed after a send attempt."""
+        stmt = (
+            update(TakDeliveryJob)
+            .where(TakDeliveryJob.id == job_id)
+            .values(
+                status="failed",
+                claim_expires_at=None,
+                claimed_by=None,
+                last_error=error_text,
+                updated_at=func.now(),
+            )
+        )
+
+        async with self.session_factory() as session:
+            await session.execute(stmt)
+            await session.commit()
+
+    async def get_delivery_job(self, *, job_id: int) -> TakDeliveryJob | None:
+        """Fetch one TAK delivery job by primary key."""
+        stmt = select(TakDeliveryJob).where(TakDeliveryJob.id == job_id)
 
         async with self.session_factory() as session:
             result = await session.execute(stmt)

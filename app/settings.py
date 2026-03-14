@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import socket
 from pathlib import Path
 
 from pydantic import Field
@@ -84,6 +85,26 @@ class Settings(BaseSettings):
     stale_processing_after_sec: int = Field(
         default=300,
         validation_alias="STALE_PROCESSING_AFTER_SEC",
+    )
+    instance_id: str = Field(
+        default_factory=socket.gethostname,
+        validation_alias="INSTANCE_ID",
+    )
+    tak_delivery_batch_size: int = Field(
+        default=100,
+        validation_alias="TAK_DELIVERY_BATCH_SIZE",
+    )
+    tak_delivery_poll_interval_sec: float = Field(
+        default=1.0,
+        validation_alias="TAK_DELIVERY_POLL_INTERVAL_SEC",
+    )
+    tak_delivery_claim_lease_sec: float = Field(
+        default=30.0,
+        validation_alias="TAK_DELIVERY_CLAIM_LEASE_SEC",
+    )
+    tak_delivery_wait_poll_interval_sec: float = Field(
+        default=0.2,
+        validation_alias="TAK_DELIVERY_WAIT_POLL_INTERVAL_SEC",
     )
 
     @classmethod

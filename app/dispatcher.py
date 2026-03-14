@@ -8,7 +8,7 @@ from app.cot import CotService
 from app.db import PostgresStore, utc_now
 from app.models import MessageKey
 from app.settings import Settings
-from app.tak_client import TakTlsClient
+from app.tak_delivery import TakDeliveryService
 from app.validation import ParsedPayload, ValidationService
 
 
@@ -19,13 +19,13 @@ class MessageDispatcher:
         self,
         *,
         pg: PostgresStore,
-        tak_client: TakTlsClient,
+        tak_delivery: TakDeliveryService,
         settings: Settings,
         validation_service: ValidationService,
         cot_service: CotService,
     ) -> None:
         self.pg = pg
-        self.tak_client = tak_client
+        self.tak_delivery = tak_delivery
         self.settings = settings
         self.validation_service = validation_service
         self.cot_service = cot_service
@@ -74,6 +74,7 @@ class MessageDispatcher:
         )
 
         delivered, last_error = await self._send_with_retries(
+            key=key,
             uid=uid,
             payload=payload,
             attempts=self.settings.immediate_retry_attempts,
@@ -163,6 +164,7 @@ class MessageDispatcher:
         uid = self.cot_service.build_uid(key)
 
         delivered, last_error = await self._send_with_retries(
+            key=key,
             uid=uid,
             payload=payload,
             attempts=self.settings.immediate_retry_attempts,
@@ -268,7 +270,12 @@ class MessageDispatcher:
                 payload.lon,
                 payload.target,
             )
-            await self.tak_client.send_event(cot_xml)
+            await self.tak_delivery.send_event(
+                key=key,
+                payload=cot_xml,
+                phase="replay",
+                uid=row.uid,
+            )
             await self.pg.mark_replay_scheduled(
                 key=key,
                 when=utc_now(),
@@ -286,6 +293,7 @@ class MessageDispatcher:
     async def _send_with_retries(
         self,
         *,
+        key: MessageKey,
         uid: str,
         payload: ParsedPayload,
         attempts: int,
@@ -316,7 +324,12 @@ class MessageDispatcher:
                     payload.lon,
                     payload.target,
                 )
-                await self.tak_client.send_event(cot_xml)
+                await self.tak_delivery.send_event(
+                    key=key,
+                    payload=cot_xml,
+                    phase=phase,
+                    uid=uid,
+                )
                 self.log.info(
                     "Delivered to TAK on %s attempt %d/%d for uid=%s",
                     phase,
