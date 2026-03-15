@@ -786,6 +786,7 @@ ensure_client_cert() {
 
 import_ca_trust_chrome() {
   local pem="$ROOT/infra/tak/tak/certs/files/ca-trusted.pem"
+  local normalized_pem=""
   local nick="TAK Root CA"
   local existing_nick=""
 
@@ -804,7 +805,15 @@ import_ca_trust_chrome() {
   fi
 
   log "Importing TAK root CA into Chrome NSS DB as a trusted authority"
-  certutil -A -d sql:"$HOME/.pki/nssdb" -n "$nick" -t "C,," -i "$pem"
+  certutil -D -d sql:"$HOME/.pki/nssdb" -n "$nick" >/dev/null 2>&1 || true
+  normalized_pem="$(mktemp)"
+  if ! openssl x509 -in "$pem" -out "$normalized_pem" >/dev/null 2>&1; then
+    rm -f "$normalized_pem"
+    die "Failed to normalize TAK CA certificate for NSS import: $pem"
+  fi
+
+  certutil -A -d sql:"$HOME/.pki/nssdb" -n "$nick" -t "C,," -a -i "$normalized_pem"
+  rm -f "$normalized_pem"
 }
 
 import_admin_p12_chrome() {

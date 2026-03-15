@@ -36,10 +36,12 @@ Team Awareness Kit) client.
 2. Must note that lat, long, and target description are too small an amount of information for proper target displaying. It would be good to know at least friend/enemy/civilian and stale time. Also, for a real project it would be good to replace the scoring system, which tries to guess the CoT type based on target description, with some ML model, since it does not cover cases when the user makes mistakes in words or forgets the correct wording for a target.
 3. Since it's a military-related app, I was focused on the durability and security of the application. That's why my implementation was based on a TAK server instead of a direct connection to an ATAK client.
 4. Due to the same durability reasons, I've implemented two additional loops: one for retries - in case a message was not sent due to some error, and one for replay - resending messages while they are still actual according to the stale parameter, to prevent cases when a mark was not delivered to someone because of client-side issues, such as an internet connection issue.
-
+5. It's important to keep signalbot and signal-cli-rest-api image up-to-date, since there are no official Signal libraries/cli for bots, and there may be incompatible changes at any moment.
 ### Prerequisites
 docker
+
 docker-compose
+
 libnss3-tools
 
 
@@ -88,11 +90,6 @@ LOCAL_UID=1000
 LOCAL_GID=1000
 ```
 
-Start infrastructure.
-
-```bash
-docker compose up -d postgres rabbitmq signal-cli-rest-api
-```
 
 ## Option 1: use an existing Signal account through QR linking
 
@@ -177,7 +174,7 @@ Use this approach when you want the bot to have its own Signal identity, or when
 ### Temporary testing numbers
 
 For temporary testing, one option used during development was SMSPool.net. Treat this as a short-lived testing aid, not as a durable production identity.
-
+In case if registration fails with authorization error, try to use other number, ideally - from another country. Signal has some protection against virtual numbers.
 ### Steps
 
 Set the separate bot number in `.env`:
@@ -187,17 +184,17 @@ PHONE_NUMBER=+YOUR_TEMP_NUMBER
 SIGNAL_API_MODE=json-rpc
 ```
 
-Start the Signal API:
+Start infrastructure.
 
 ```bash
-docker compose up -d signal-cli-rest-api
+docker compose up -d postgres rabbitmq signal-cli-rest-api
 ```
 
 Register the number by SMS
 
 Open [signalcaptchas.org/registration/generate.html](https://signalcaptchas.org/registration/generate.html).
 
-After solving the captcha, copy the captcha token (from the failed request in the developer console, not including `signalcaptcha://`) and start registration:
+After solving the captcha, copy the captcha token (from the failed request in the developer console, after click on button, not including `signalcaptcha://`) and start registration:
 
 ```bash
 curl -X POST -H "Content-Type: application/json" \
@@ -232,7 +229,7 @@ If the Signal part is working, but the TAK server is down, messages will be stor
 
 ### Steps
 
-Download the latest version of [TAK Server](https://tak.gov/products/tak-server).
+Download the latest docker version of [TAK Server](https://tak.gov/products/tak-server).
 The app was tested on version `5.6.0`.
 
 Unzip it into the project folder `infra/tak`, so `infra/tak` should contain 2 folders - `tak` and `docker`.

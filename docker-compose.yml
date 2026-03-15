@@ -1,7 +1,6 @@
 services:
   signal-cli-rest-api:
-    # latest image is broken right now, should be replaced with :latest later
-    image: bbernhard/signal-cli-rest-api:1772989209-ci
+    image: bbernhard/signal-cli-rest-api:0.199-dev
     container_name: signal-cli-rest-api
     restart: unless-stopped
     ports:
