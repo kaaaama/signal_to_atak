@@ -175,8 +175,7 @@ class CotTypeCatalogService:
 
         for entry in self.load_catalog():
             score = self._score_entry(query, query_tokens, entry)
-            # At least two words should match
-            if score < 500:
+            if score <= 250:
                 continue
 
             match = CotMatch(

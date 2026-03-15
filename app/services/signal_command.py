@@ -1,7 +1,5 @@
 """Signal command handler for inbound messages."""
 
-from __future__ import annotations
-
 import logging
 
 from signalbot import Command, Context
