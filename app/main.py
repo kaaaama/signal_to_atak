@@ -1,7 +1,5 @@
 """Application entry point for the Signal-to-TAK bridge."""
 
-from __future__ import annotations
-
 from app.services.application import Application
 
 

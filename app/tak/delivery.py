@@ -124,8 +124,6 @@ class TakDeliveryService:
                 async with queue.iterator() as iterator:
                     async for message in iterator:
                         await self._handle_incoming_message(message)
-            except asyncio.CancelledError:
-                raise
             except Exception:
                 self.log.exception("RabbitMQ TAK delivery worker failed")
                 await self._close_broker()

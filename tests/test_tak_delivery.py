@@ -1,7 +1,3 @@
-from __future__ import annotations
-
-from types import SimpleNamespace
-
 import pytest
 
 from app.tak.delivery import TakDeliveryEnvelope, TakDeliveryService
