@@ -6,7 +6,6 @@ import asyncio
 import json
 import logging
 from dataclasses import asdict, dataclass
-from datetime import datetime
 
 import aio_pika
 from aio_pika import DeliveryMode, IncomingMessage, Message
